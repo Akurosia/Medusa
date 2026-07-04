@@ -4,13 +4,14 @@ from __future__ import unicode_literals
 
 import logging
 
-from medusa import app, db, notifiers, ui
-from medusa.helper.exceptions import ShowDirectoryNotFoundException
+from medusa import app, notifiers, ui
+from medusa.helper.exceptions import CantRefreshShowException, ShowDirectoryNotFoundException
 from medusa.logger.adapters.style import BraceAdapter
 from medusa.server.api.v2.base import BaseRequestHandler
 from medusa.server.api.v2.series import SeriesHandler
-from medusa.tv.episode import Episode, EpisodeNumber
+from medusa.tv.episode import EpisodeNumber
 from medusa.tv.series import Series, SeriesIdentifier
+from medusa.helper.common import try_int
 
 from requests.compat import quote_plus
 
@@ -18,6 +19,25 @@ from tornado.escape import json_decode
 
 log = BraceAdapter(logging.getLogger(__name__))
 log.logger.addHandler(logging.NullHandler())
+
+
+def _get_rename_roots(series, season=None):
+    """Return one root episode per media file for rename operations."""
+    ep_obj_rename_list = []
+    for ep_obj in series.get_all_episodes(has_location=True, season=season):
+        if not ep_obj.location:
+            continue
+
+        has_already = False
+        for check in ep_obj.related_episodes + [ep_obj]:
+            if check in ep_obj_rename_list:
+                has_already = True
+                break
+
+        if not has_already:
+            ep_obj_rename_list.append(ep_obj)
+
+    return ep_obj_rename_list
 
 
 class SeriesOperationHandler(BaseRequestHandler):
@@ -56,6 +76,24 @@ class SeriesOperationHandler(BaseRequestHandler):
                 return self._created()
             return self._no_content()
 
+        if data['type'] == 'REFRESH':
+            season = try_int(data.get('season'), None)
+            seasons = [season] if season is not None else None
+            try:
+                app.show_queue_scheduler.action.refreshShow(series, seasons=seasons)
+            except CantRefreshShowException as error:
+                return self._bad_request(str(error))
+
+            return self._created()
+
+        if data['type'] == 'RENAME_SEASON':
+            season = try_int(data.get('season'), None)
+            if season is None:
+                return self._bad_request('You must provide a season')
+
+            app.show_queue_scheduler.action.renameShowEpisodes(series, seasons=[season])
+            return self._created()
+
         if data['type'] == 'TEST_RENAME':
             try:
                 series.validate_location  # @UnusedVariable
@@ -64,18 +102,7 @@ class SeriesOperationHandler(BaseRequestHandler):
 
             filter_season = data.get('season')
 
-            ep_obj_list = series.get_all_episodes(has_location=True, season=filter_season)
-            ep_obj_list = [x for x in ep_obj_list if x.location]
-            ep_obj_rename_list = []
-            for ep_obj in ep_obj_list:
-                has_already = False
-                for check in ep_obj.related_episodes + [ep_obj]:
-                    if check in ep_obj_rename_list:
-                        has_already = True
-                        break
-                if not has_already:
-                    ep_obj_rename_list.append(ep_obj)
-
+            ep_obj_rename_list = _get_rename_roots(series, season=filter_season)
             if ep_obj_rename_list:
                 ep_obj_rename_list.reverse()
             return self._ok(data=[
@@ -92,42 +119,21 @@ class SeriesOperationHandler(BaseRequestHandler):
             except ShowDirectoryNotFoundException:
                 return self._bad_request("Can't rename episodes when the show dir is missing.")
 
-            main_db_con = db.DBConnection()
+            selected_episodes = set()
             for episode_slug in episodes:
                 episode_number = EpisodeNumber.from_slug(episode_slug)
                 if not episode_number:
                     continue
 
-                episode = Episode.find_by_series_and_episode(series, episode_number)
-                if not episode:
+                selected_episodes.add((episode_number.season, episode_number.episode))
+
+            for root_ep_obj in _get_rename_roots(series):
+                related_numbers = {
+                    (ep_obj.season, ep_obj.episode)
+                    for ep_obj in root_ep_obj.related_episodes + [root_ep_obj]
+                }
+                if not selected_episodes.intersection(related_numbers):
                     continue
-
-                # this is probably the worst possible way to deal with double eps
-                # but I've kinda painted myself into a corner here with this stupid database
-                ep_result = main_db_con.select(
-                    'SELECT location '
-                    'FROM tv_episodes '
-                    'WHERE indexer = ? AND showid = ? AND season = ? AND episode = ? AND 5=5',
-                    [series.indexer, series.series_id, episode.season, episode.episode])
-
-                if not ep_result:
-                    log.warning('Unable to find an episode for {episode}, skipping', {'episode': episode})
-                    continue
-
-                related_eps_result = main_db_con.select(
-                    'SELECT season, episode '
-                    'FROM tv_episodes '
-                    'WHERE location = ? AND episode != ?',
-                    [ep_result[0]['location'], episode.episode]
-                )
-
-                root_ep_obj = episode
-                root_ep_obj.related_episodes = []
-
-                for cur_related_ep in related_eps_result:
-                    related_ep_obj = series.get_episode(cur_related_ep['season'], cur_related_ep['episode'])
-                    if related_ep_obj not in root_ep_obj.related_episodes:
-                        root_ep_obj.related_episodes.append(related_ep_obj)
 
                 root_ep_obj.rename()
             return self._created()

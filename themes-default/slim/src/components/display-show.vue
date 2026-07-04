@@ -66,6 +66,10 @@
                             <app-link v-if="anyEpisodeNotUnaired(props.row)" class="epManualSearch" :href="`home/snatchSelection?showslug=${show.id.slug}&amp;season=${props.row.season}&amp;episode=1&amp;manual_search_type=season`">
                                 <img data-ep-manual-search src="images/manualsearch-white.png" width="16" height="16" alt="search" title="Manual Search">
                             </app-link>
+                            <span class="season-actions">
+                                <button type="button" class="btn-medusa btn-xs" :disabled="seasonOperationActive(props.row.season, 'REFRESH')" title="Scan this season" @click.stop.prevent="queueSeasonOperation('REFRESH', props.row.season)">Scan</button>
+                                <button type="button" class="btn-medusa btn-xs" title="Preview rename this season" @click.stop.prevent="previewSeasonRename(props.row.season)">Rename</button>
+                            </span>
                             <div class="season-scene-exception" :data-season="props.row.season > 0 ? props.row.season : 'Specials'" />
                             <img v-bind="getSeasonExceptions(props.row.season)">
                         </h3>
@@ -222,6 +226,10 @@
                             <app-link v-if="anyEpisodeNotUnaired(props.row)" class="epManualSearch" :href="`home/snatchSelection?showslug=${show.id.slug}&amp;season=${props.row.season}&amp;episode=1&amp;manual_search_type=season`">
                                 <img data-ep-manual-search src="images/manualsearch-white.png" width="16" height="16" alt="search" title="Manual Search">
                             </app-link>
+                            <span class="season-actions">
+                                <button type="button" class="btn-medusa btn-xs" :disabled="seasonOperationActive(props.row.season, 'REFRESH')" title="Scan this season" @click.stop.prevent="queueSeasonOperation('REFRESH', props.row.season)">Scan</button>
+                                <button type="button" class="btn-medusa btn-xs" title="Preview rename this season" @click.stop.prevent="previewSeasonRename(props.row.season)">Rename</button>
+                            </span>
                             <div class="season-scene-exception" :data-season="props.row.season > 0 ? props.row.season : 'Specials'" />
                             <img v-bind="getSeasonExceptions(props.row.season)">
                         </h3>
@@ -524,6 +532,7 @@ export default {
             perPageDropdown,
             paginationPerPage: getPaginationPerPage(),
             selectedEpisodes: [],
+            seasonOperations: {},
             // We need to keep track of which episode where trying to search, for the vue-modal
             failedSearchEpisodes: [],
             backlogSearchEpisodes: [],
@@ -755,6 +764,36 @@ export default {
         anyEpisodeNotUnaired(season) {
             return season.children.filter(ep => ep.status !== 'Unaired').length > 0;
         },
+        seasonOperationActive(season, type) {
+            return Boolean(this.seasonOperations[`${type}-${season}`]);
+        },
+        previewSeasonRename(season) {
+            const { showSlug } = this;
+            this.$router.push({ name: 'testRename', query: { showslug: showSlug, season } });
+        },
+        async queueSeasonOperation(type, season) {
+            const { showSlug } = this;
+            const key = `${type}-${season}`;
+            Vue.set(this.seasonOperations, key, true);
+
+            try {
+                await this.client.api.post(
+                    `series/${showSlug}/operation`,
+                    { type, season },
+                    { timeout: 60000 }
+                );
+                this.$snotify.success(
+                    `${type === 'REFRESH' ? 'Scan' : 'Rename'} queued for ${season === 0 ? 'Specials' : `Season ${season}`}`
+                );
+            } catch (error) {
+                this.$snotify.error(
+                    `Unable to queue ${type === 'REFRESH' ? 'scan' : 'rename'} for ${season === 0 ? 'Specials' : `Season ${season}`}`,
+                    'Error'
+                );
+            } finally {
+                Vue.set(this.seasonOperations, key, false);
+            }
+        },
         episodesInverse(season) {
             const { invertTable } = this;
             if (!season.children) {
@@ -952,19 +991,16 @@ export default {
             return pages[page] || [];
         },
         loadEpisodes(page) {
-            const { showSlug, getEpisodes } = this;
-            // Wrap getEpisodes into an async/await function, so we can wait for the season to have been committed
-            // before going on to the next one.
-            const _getEpisodes = async showSlug => {
-                for (const season of this.neededSeasons(page)) {
-                    // We're waiting for the results by design, to give vue the chance to update the dom.
-                    // If we fire all the promises at once for, for example 25 seasons. We'll overload medusa's app
-                    // and chance is high a number of requests will timeout.
-                    await getEpisodes({ showSlug, season }); // eslint-disable-line no-await-in-loop
-                }
-            };
+            const { showSlug, getEpisodes, show } = this;
+            const seasons = this.neededSeasons(page);
+            if (seasons.length === 0) {
+                return;
+            }
 
-            _getEpisodes(showSlug);
+            getEpisodes({ showSlug, seasons }).catch(error => {
+                this.$snotify.error(`Unable to load episodes for ${show.title}`, 'Error');
+                console.error(error);
+            });
         },
         initializeEpisodes(force = false) {
             const { getEpisodes, showSlug, setRecentShow, show } = this;

@@ -33,6 +33,7 @@ export { default as manageFailedDownloads } from './manage-failed-downloads.vue'
 export { default as manageMassEdit } from './manage-mass-edit.vue';
 export { default as manageMassUpdate } from './manage-mass-update.vue';
 export { default as manageMissingSubtitles } from './manage-missing-subtitles.vue';
+export { default as manageNewDownloads } from './manage-new-downloads.vue';
 export { default as manageSearches } from './manage-searches.vue';
 export { default as ManualPostProcess } from './manual-post-process.vue';
 export { default as News } from './news.vue';

@@ -80,6 +80,15 @@ export default {
         }
     },
     mounted() {
+        const missingKey = this.lazySrc ? `missing-asset-url:${this.lazySrc}` : null;
+        if (missingKey && window.sessionStorage.getItem(missingKey) === '1') {
+            if (this.lazyDefaultSrc) {
+                this.$el.setAttribute('src', this.lazyDefaultSrc);
+            }
+            this.loading = false;
+            return;
+        }
+
     // As soon as the <img> element triggers
     // the `load` event, the loading state is
     // set to `false`, which removes the apsect
@@ -105,6 +114,9 @@ export default {
                 img.src = el.getAttribute('data-src');
                 img.addEventListener('error', () => {
                     el.classList.add('error');
+                    if (missingKey) {
+                        window.sessionStorage.setItem(missingKey, '1');
+                    }
                     if (this.lazyDefaultSrc) {
                         el.setAttribute('src', this.lazyDefaultSrc);
                     }

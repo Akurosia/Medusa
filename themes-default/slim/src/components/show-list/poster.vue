@@ -2,7 +2,7 @@
     <div name="poster-container-row" class="row">
         <div name="poster-container-col" class="col-md-12">
             <isotope :ref="`isotope-${listTitle}`" :list="showsReady" :id="`isotope-container-${listTitle}`" :item-selector="'show-container'" :options="option" v-images-loaded:on.always="updateLayout">
-                <div v-for="show in showsReady" :key="show.id.slug" :id="show.id.slug" :style="showContainerStyle" :data-name="show.title" :data-date="show.airDate" :data-network="show.network" :data-indexer="show.indexer">
+                <div v-for="show in showsReady" :key="show.id.slug" :id="show.id.slug" class="show-container" :style="showContainerStyle" :data-name="show.title" :data-filter-title="show.title.toLowerCase()" :data-date="show.airDate" :data-network="show.network" :data-indexer="show.indexer">
                     <div class="overlay-container">
                         <div class="background-image">
                             <img src="images/poster-back-dark.png">
@@ -18,7 +18,7 @@
                             <progress-bar :percentage="show.stats.tooltip.percentage" />
                             <div class="show-title">
                                 <div class="ellipsis">{{show.title}}</div>
-                                <div v-if="show.xemNumbering.length > 0" class="xem">
+                                <div v-if="show.hasXemNumbering || show.xemNumbering.length > 0" class="xem">
                                     <img src="images/xem.png" width="16" height="16">
                                 </div>
                                 <!--  endif -->
@@ -55,6 +55,7 @@
 </template>
 <script>
 import { mapGetters, mapState } from 'vuex';
+import debounce from 'lodash/debounce';
 import pretty from 'pretty-bytes';
 import { AppLink, Asset, ProgressBar, QualityPill } from '../helpers';
 import Isotope from 'vueisotope';
@@ -144,6 +145,14 @@ export default {
             filterByTitle: ''
         };
     },
+    created() {
+        this.filterPosterShowsDebounced = debounce(this.filterPosterShows, 75);
+    },
+    beforeDestroy() {
+        if (this.filterPosterShowsDebounced) {
+            this.filterPosterShowsDebounced.cancel();
+        }
+    },
     computed: {
         ...mapState({
             config: state => state.config.general,
@@ -185,7 +194,6 @@ export default {
         parsePrevDateFn(row) {
             const { fuzzyParseDateTime } = this;
             if (row.prevAirDate) {
-                console.log(`Calculating time for show ${row.title} prev date: ${row.prevAirDate}`);
                 return fuzzyParseDateTime(row.prevAirDate);
             }
             return '';
@@ -193,7 +201,6 @@ export default {
         parseNextDateFn(row) {
             const { fuzzyParseDateTime } = this;
             if (row.nextAirDate) {
-                console.log(`Calculating time for show ${row.title} next date: ${row.nextAirDate}`);
                 return fuzzyParseDateTime(row.nextAirDate);
             }
             return '';
@@ -233,9 +240,8 @@ export default {
             this.$nextTick(() => {
                 this.$refs[`isotope-${this.listTitle}`].iso.reloadItems();
                 this.$refs[`isotope-${this.listTitle}`].iso.arrange({ sortBy: this.posterSortBy, sortAscending: this.posterSortDir });
+                this.filterPosterShows(this.showFilterByName);
             });
-
-            console.log('isotope Layout loaded');
         },
         dateOrStatus(show) {
             if (show.nextAirDate) {
@@ -246,6 +252,24 @@ export default {
                 return 'Paused';
             }
             return show.status;
+        },
+        filterPosterShows(value) {
+            const { $refs, listTitle } = this;
+            const isotope = $refs[`isotope-${listTitle}`];
+            if (!isotope || !isotope.$el) {
+                return;
+            }
+
+            const normalizedFilter = (value || '').trim().toLowerCase();
+            const allContainers = isotope.$el.querySelectorAll('.show-container');
+
+            for (const container of allContainers) {
+                if (!normalizedFilter || container.dataset.filterTitle.includes(normalizedFilter)) {
+                    container.classList.remove('hide');
+                } else {
+                    container.classList.add('hide');
+                }
+            }
         }
     },
     watch: {
@@ -276,17 +300,7 @@ export default {
             });
         },
         showFilterByName(value) {
-            const { $refs, listTitle } = this;
-
-            const allContainers = $refs[`isotope-${listTitle}`].$el.querySelectorAll('.show-container');
-
-            for (const container of allContainers) {
-                if (container.textContent.toLowerCase().includes(value.toLowerCase())) {
-                    container.classList.remove('hide');
-                } else {
-                    container.classList.add('hide');
-                }
-            }
+            this.filterPosterShowsDebounced(value);
         },
         $route(to) {
             if (to.name === 'home') {

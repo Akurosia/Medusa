@@ -199,7 +199,7 @@ class ShowQueue(generic_queue.GenericQueue):
 
         return queue_item_update_show
 
-    def refreshShow(self, show, force=False):
+    def refreshShow(self, show, force=False, seasons=None):
 
         if self.isBeingRefreshed(show) and not force:
             raise CantRefreshShowException('This show is already being refreshed, not refreshing again.')
@@ -209,7 +209,7 @@ class ShowQueue(generic_queue.GenericQueue):
                       " Since updates do a refresh at the end anyway I'm skipping this request.")
             return
 
-        queue_item_obj = QueueItemRefresh(show, force=force)
+        queue_item_obj = QueueItemRefresh(show, force=force, seasons=seasons)
 
         log.debug('{id}: Queueing show refresh for {show}', {'id': show.series_id, 'show': show.name})
 
@@ -217,9 +217,9 @@ class ShowQueue(generic_queue.GenericQueue):
 
         return queue_item_obj
 
-    def renameShowEpisodes(self, show):
+    def renameShowEpisodes(self, show, seasons=None):
 
-        queue_item_obj = QueueItemRename(show)
+        queue_item_obj = QueueItemRename(show, seasons=seasons)
 
         self.add_item(queue_item_obj)
 
@@ -734,7 +734,7 @@ class QueueItemAdd(ShowQueueItem):
 class QueueItemRefresh(ShowQueueItem):
     """QueueItemRefresh class."""
 
-    def __init__(self, show=None, force=False):
+    def __init__(self, show=None, force=False, seasons=None):
         """Queue item refresh constructor."""
         ShowQueueItem.__init__(self, ShowQueueActions.REFRESH, show)
 
@@ -743,26 +743,35 @@ class QueueItemRefresh(ShowQueueItem):
 
         # force refresh certain items
         self.force = force
+        self.seasons = None if seasons is None else [seasons] if not isinstance(seasons, list) else seasons
 
     def run(self):
         """Run QueueItemRefresh queue item."""
         ShowQueueItem.run(self)
 
         log.info(
-            '{id}: Performing refresh on {show}',
-            {'id': self.show.series_id, 'show': self.show.name}
+            '{id}: Performing refresh on {show}{season}',
+            {
+                'id': self.show.series_id,
+                'show': self.show.name,
+                'season': ' for season(s) [{0}]'.format(
+                    ','.join(text_type(s) for s in self.seasons)
+                ) if self.seasons else '',
+            }
         )
         ws.Message('QueueItemShow', self.to_json).push()
 
         try:
-            self.show.refresh_dir()
-            if self.force:
+            self.show.refresh_dir(seasons=self.seasons)
+            if self.force and self.seasons is None:
                 self.show.update_metadata()
-            self.show.write_metadata()
-            self.show.populate_cache()
+            if self.seasons is None:
+                self.show.write_metadata()
+                self.show.populate_cache()
 
             # Load XEM data to DB for show
-            scene_numbering.xem_refresh(self.show, force=True)
+            if self.seasons is None:
+                scene_numbering.xem_refresh(self.show, force=True)
             self.success = True
         except IndexerException as error:
             log.warning(
@@ -781,8 +790,9 @@ class QueueItemRefresh(ShowQueueItem):
 
 
 class QueueItemRename(ShowQueueItem):
-    def __init__(self, show=None):
+    def __init__(self, show=None, seasons=None):
         ShowQueueItem.__init__(self, ShowQueueActions.RENAME, show)
+        self.seasons = None if seasons is None else [seasons] if not isinstance(seasons, list) else seasons
 
     def run(self):
 
@@ -790,8 +800,13 @@ class QueueItemRename(ShowQueueItem):
         ws.Message('QueueItemShow', self.to_json).push()
 
         log.info(
-            'Performing rename on {series_name}',
-            {'series_name': self.show.name}
+            'Performing rename on {series_name}{season}',
+            {
+                'series_name': self.show.name,
+                'season': ' for season(s) [{0}]'.format(
+                    ','.join(text_type(s) for s in self.seasons)
+                ) if self.seasons else '',
+            }
         )
 
         try:
@@ -805,7 +820,7 @@ class QueueItemRename(ShowQueueItem):
 
         ep_obj_rename_list = []
 
-        ep_obj_list = self.show.get_all_episodes(has_location=True)
+        ep_obj_list = self.show.get_all_episodes(season=self.seasons, has_location=True)
         for cur_ep_obj in ep_obj_list:
             # Only want to rename if we have a location
             if cur_ep_obj.location:

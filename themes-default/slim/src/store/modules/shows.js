@@ -32,12 +32,35 @@ const state = {
     queueitems: []
 };
 
+const showCacheShape = show => {
+    const {
+        seasons,
+        sceneAbsoluteNumbering,
+        xemAbsoluteNumbering,
+        sceneNumbering,
+        ...cachedShow
+    } = show;
+
+    return cachedShow;
+};
+
+const showsCacheKey = rootState => `${rootState.config.system.webRoot ? `${rootState.config.system.webRoot}_` : ''}shows`;
+
+const persistShowsCache = (rootState, shows) => {
+    setTimeout(() => {
+        try {
+            localStorage.setItem(showsCacheKey(rootState), JSON.stringify(shows.map(showCacheShape)));
+        } catch (error) {
+            console.warn(error);
+        }
+    }, 0);
+};
+
 const mutations = {
     [ADD_SHOW](state, show) {
         const existingShow = state.shows.find(({ id, indexer }) => Number(show.id[show.indexer]) === Number(id[indexer]));
 
         if (!existingShow) {
-            console.debug(`Adding ${show.title || show.indexer + String(show.id)} as it wasn't found in the shows array`, show);
             state.shows.push(show);
             return;
         }
@@ -45,7 +68,6 @@ const mutations = {
         // Merge new show object over old one
         // this allows detailed queries to update the record
         // without the non-detailed removing the extra data
-        console.debug(`Found ${show.title || show.indexer + String(show.id)} in shows array attempting merge`);
         const newShow = {
             ...existingShow,
             ...show
@@ -53,10 +75,10 @@ const mutations = {
 
         // Repair the searchTemplates
         newShow.config.searchTemplates = show.config.searchTemplates ? show.config.searchTemplates : existingShow.config.searchTemplates;
+        newShow.xemNumbering = show.xemNumbering && show.xemNumbering.length > 0 ? show.xemNumbering : existingShow.xemNumbering;
 
         // Update state
         Vue.set(state.shows, state.shows.indexOf(existingShow), newShow);
-        console.debug(`Merged ${newShow.title || newShow.indexer + String(newShow.id)}`, newShow);
     },
     [ADD_SHOWS](state, shows) {
         // If the show is already available, we only want to merge values
@@ -68,12 +90,14 @@ const mutations = {
                     sceneAbsoluteNumbering,
                     xemAbsoluteNumbering,
                     sceneNumbering,
+                    xemNumbering,
                     ...showWithoutDetailed
                 } = newShow;
 
                 // Repair searchTemplates.
                 const mergedShow = { ...existing, ...showWithoutDetailed };
                 mergedShow.config.searchTemplates = showWithoutDetailed.config.searchTemplates ? showWithoutDetailed.config.searchTemplates : existing.config.searchTemplates;
+                mergedShow.xemNumbering = xemNumbering && xemNumbering.length > 0 ? xemNumbering : existing.xemNumbering;
 
                 mergedShows.push(mergedShow);
             } else {
@@ -81,7 +105,6 @@ const mutations = {
             }
         }
         state.shows = mergedShows;
-        console.debug(`Added ${shows.length} shows to store`);
     },
     [ADD_SHOW_CONFIG](state, { show, config }) {
         const existingShow = state.shows.find(({ id, indexer }) => Number(show.id[show.indexer]) === Number(id[indexer]));
@@ -144,7 +167,6 @@ const mutations = {
         // Update state
         const existingShow = state.shows.find(({ id, indexer }) => Number(show.id[show.indexer]) === Number(id[indexer]));
         Vue.set(state.shows, state.shows.indexOf(existingShow), newShow);
-        console.log(`Storing episodes for show ${newShow.title} seasons: ${[...new Set(episodes.map(episode => episode.season))].join(', ')}`);
     },
     [ADD_SHOW_SCENE_EXCEPTION](state, { show, exception }) {
         // Get current show object
@@ -209,8 +231,10 @@ const mutations = {
     loadShowsFromStore(state, namespace) {
         // Check if the ID exists
         // Update (namespaced) localStorage
-        if (localStorage.getItem('shows')) {
-            Vue.set(state, 'shows', JSON.parse(localStorage.getItem(`${namespace}shows`)));
+        const key = `${namespace}shows`;
+        if (localStorage.getItem(key)) {
+            Vue.set(state, 'shows', JSON.parse(localStorage.getItem(key)));
+            state.loading.finished = true;
         }
     }
 };
@@ -257,8 +281,13 @@ const getters = {
             return [];
         }
 
+        const statsByShow = rootState.stats.show.stats.reduce((items, stat) => {
+            items[`${stat.indexerId}:${stat.seriesId}`] = stat;
+            return items;
+        }, {});
+
         return state.shows.map(show => {
-            let showStats = rootState.stats.show.stats.find(stat => stat.indexerId === getters.indexerNameToId(show.indexer) && stat.seriesId === show.id[show.indexer]);
+            let showStats = statsByShow[`${getters.indexerNameToId(show.indexer)}:${show.id[show.indexer]}`];
             const newLine = '\u000D';
             let text = 'Unaired';
             let title = '';
@@ -311,35 +340,43 @@ const getters = {
 
         const { showsWithStats } = getters;
 
-        let shows = null;
+        const selectedRoot = selectedRootIndex === -1 ? null : rootDirs.slice(1)[selectedRootIndex];
+        const normalizedFilter = (showFilterByName || '').trim().toLowerCase();
 
         // Filter root dirs
-        shows = showsWithStats.filter(show => selectedRootIndex === -1 || show.config.location.includes(rootDirs.slice(1)[selectedRootIndex]));
+        let shows = showsWithStats.filter(show => !selectedRoot || show.config.location.includes(selectedRoot));
 
         // Filter by text for the banner, simple and smallposter layouts.
         // The Poster layout uses vue-isotope and this does not respond well to changes to the `list` property.
-        if (layout.home !== 'poster') {
-            shows = shows.filter(show => show.title.toLowerCase().includes(showFilterByName.toLowerCase()));
+        if (layout.home !== 'poster' && normalizedFilter) {
+            shows = shows.filter(show => show.title.toLowerCase().includes(normalizedFilter));
         }
 
-        const categorizedShows = showListOrder.filter(
-            listTitle => shows.filter(
-                show => show.config.showLists.map(
-                    list => list.toLowerCase()
-                ).includes(listTitle.toLowerCase())
-            ).length > 0
-        ).map(
-            listTitle => ({ listTitle, shows: shows.filter(
-                show => show.config.showLists.map(list => list.toLowerCase()).includes(listTitle.toLowerCase())
-            ) })
-        );
+        const normalizedShowLists = showListOrder.map(listTitle => listTitle.toLowerCase());
+        const categoryMap = showListOrder.reduce((categories, listTitle) => {
+            categories[listTitle.toLowerCase()] = { listTitle, shows: [] };
+            return categories;
+        }, {});
+        const uncategorizedShows = [];
 
-        // Check for shows that are not in any category anymore
-        const uncategorizedShows = shows.filter(show => {
-            return show.config.showLists.map(item => {
-                return showListOrder.map(list => list.toLowerCase()).includes(item.toLowerCase());
-            }).every(item => !item);
-        });
+        for (const show of shows) {
+            const showLists = show.config.showLists.map(listTitle => listTitle.toLowerCase());
+            let categorized = false;
+            for (const listTitle of showLists) {
+                if (categoryMap[listTitle]) {
+                    categoryMap[listTitle].shows.push(show);
+                    categorized = true;
+                }
+            }
+
+            if (!categorized || showLists.every(listTitle => !normalizedShowLists.includes(listTitle))) {
+                uncategorizedShows.push(show);
+            }
+        }
+
+        const categorizedShows = normalizedShowLists
+            .map(listTitle => categoryMap[listTitle])
+            .filter(category => category.shows.length > 0);
 
         if (uncategorizedShows.length > 0) {
             categorizedShows.push({ listTitle: 'uncategorized', shows: uncategorizedShows });
@@ -359,9 +396,15 @@ const getters = {
  * @typedef {object} ShowGetParameters
  * @property {boolean} detailed Fetch detailed information? (e.g. scene/xem numbering)
  * @property {boolean} episodes Fetch seasons & episodes?
+ * @property {boolean} settings Fetch settings-only information?
+ * @property {boolean} numbering Fetch XEM/scene numbering?
  */
 
 const actions = {
+    loadShowsFromStore({ commit, rootState }) {
+        const namespace = rootState.config.system.webRoot ? `${rootState.config.system.webRoot}_` : '';
+        commit('loadShowsFromStore', namespace);
+    },
     /**
      * Get show from API and commit it to the store.
      *
@@ -369,7 +412,7 @@ const actions = {
      * @param {ShowIdentifier&ShowGetParameters} parameters Request parameters.
      * @returns {Promise} The API response.
      */
-    getShow({ rootState, commit }, { showSlug, detailed, episodes }) {
+    getShow({ rootState, commit }, { showSlug, detailed, episodes, settings, numbering }) {
         return new Promise((resolve, reject) => {
             const params = {};
             let timeout = 30000;
@@ -377,12 +420,19 @@ const actions = {
             if (detailed !== undefined) {
                 params.detailed = detailed;
                 timeout = 60000;
-                timeout = 60000;
             }
 
             if (episodes !== undefined) {
                 params.episodes = episodes;
                 timeout = 60000;
+            }
+
+            if (settings !== undefined) {
+                params.settings = settings;
+            }
+
+            if (numbering !== undefined) {
+                params.numbering = numbering;
             }
 
             rootState.auth.client.api.get(`/series/${showSlug}`, { params, timeout })
@@ -402,7 +452,7 @@ const actions = {
      * @param {ShowParameteres} parameters - Request parameters.
      * @returns {Promise} The API response.
      */
-    getEpisodes({ rootState, commit, getters }, { showSlug, season }) {
+    getEpisodes({ rootState, commit, getters }, { showSlug, season, seasons }) {
         return new Promise((resolve, reject) => {
             const { getShowById } = getters;
             const show = getShowById(showSlug);
@@ -416,8 +466,12 @@ const actions = {
                 params.season = season;
             }
 
+            if (seasons !== undefined) {
+                params.seasons = seasons.join(',');
+            }
+
             // Get episodes
-            rootState.auth.client.api.get(`/series/${showSlug}/episodes`, { params })
+            rootState.auth.client.api.get(`/series/${showSlug}/episodes`, { params, timeout: 180000 })
                 .then(response => {
                     commit(ADD_SHOW_EPISODE, { show, episodes: response.data });
                     resolve();
@@ -454,7 +508,8 @@ const actions = {
             const page = 1;
             const params = {
                 limit,
-                page
+                page,
+                numbering: false
             };
 
             const pageRequests = [];
@@ -473,8 +528,7 @@ const actions = {
                     // Optionally get additional pages
                     for (let page = 2; page <= totalPages; page++) {
                         pageRequests.push(new Promise((resolve, reject) => {
-                            const newPage = { page };
-                            newPage.limit = params.limit;
+                            const newPage = { ...params, page };
                             return rootState.auth.client.api.get('/series', { params: newPage })
                                 .then(response => {
                                     newShows.push(...response.data);
@@ -497,12 +551,7 @@ const actions = {
                             commit(ADD_SHOWS, newShows);
 
                             // Update (namespaced) localStorage
-                            const namespace = rootState.config.system.webRoot ? `${rootState.config.system.webRoot}_` : '';
-                            try {
-                                localStorage.setItem(`${namespace}shows`, JSON.stringify(state.shows));
-                            } catch (error) {
-                                console.warn(error);
-                            }
+                            persistShowsCache(rootState, state.shows);
                             resolve();
                         });
                 })
@@ -552,12 +601,7 @@ const actions = {
         rootState.auth.client.api.patch('config/main', config);
 
         // Update (namespaced) localStorage
-        const namespace = rootState.config.system.webRoot ? `${rootState.config.system.webRoot}_` : '';
-        try {
-            localStorage.setItem(`${namespace}shows`, JSON.stringify(state.shows));
-        } catch (error) {
-            console.warn(error);
-        }
+        persistShowsCache(rootState, state.shows);
     },
     updateShowQueueItem(context, queueItem) {
         // Update store's search queue item. (provided through websocket)

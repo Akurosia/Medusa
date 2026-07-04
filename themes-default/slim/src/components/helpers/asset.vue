@@ -1,8 +1,8 @@
 <template>
     <div v-if="!lazy" style="display: inherit">
-        <img v-if="!link" v-bind="{ src, class: cls, class: newCls }" @error="error = true">
+        <img v-if="!link" v-bind="{ src, class: cls, class: newCls }" @error="markMissing">
         <app-link v-else :href="href">
-            <img v-bind="{ src, class: newCls, style: imgStyle }" @error="error = true">
+            <img v-bind="{ src, class: newCls, style: imgStyle }" @error="markMissing">
         </app-link>
     </div>
     <div v-else style="display: inherit">
@@ -54,7 +54,7 @@ export default {
         src() {
             const { apiKey, defaultSrc, error, showSlug, type } = this;
 
-            if (error || !showSlug || !type) {
+            if (error || !showSlug || !type || this.isMarkedMissing()) {
                 return defaultSrc;
             }
 
@@ -89,6 +89,23 @@ export default {
                 tempStyle += `;width=${imgWidth}px`;
             }
             return tempStyle;
+        }
+    },
+    methods: {
+        missingAssetKey() {
+            const { showSlug, type } = this;
+            return showSlug && type ? `missing-asset:${showSlug}:${type}` : null;
+        },
+        isMarkedMissing() {
+            const key = this.missingAssetKey();
+            return key && window.sessionStorage.getItem(key) === '1';
+        },
+        markMissing() {
+            const key = this.missingAssetKey();
+            if (key) {
+                window.sessionStorage.setItem(key, '1');
+            }
+            this.error = true;
         }
     }
 };

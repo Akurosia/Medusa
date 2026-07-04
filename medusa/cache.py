@@ -2,12 +2,17 @@
 """Cache (dogpile) used by application."""
 from __future__ import unicode_literals
 
+import dbm
+import importlib
+import logging
 import os
 from datetime import timedelta
 
 from dogpile.cache.backends.file import AbstractFileLock
 from dogpile.cache.region import make_region
 from dogpile.util.readwrite_lock import ReadWriteMutex
+
+log = logging.getLogger(__name__)
 
 
 class MutexLock(AbstractFileLock):
@@ -47,6 +52,36 @@ recommended_series_cache = make_region()
 anidb_cache = make_region()
 
 
+def _remove_dbm_cache(filename):
+    """Remove a dbm cache and common companion files."""
+    for path in [filename] + [filename + os.extsep + ext for ext in ('db', 'dat', 'pag', 'dir')]:
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def _prepare_dbm_cache(filename):
+    """Remove dbm cache files that this Python cannot reopen."""
+    dbm_type = dbm.whichdb(filename)
+    if not dbm_type:
+        return
+
+    try:
+        importlib.import_module(dbm_type)
+    except ImportError:
+        log.warning(
+            'Removing incompatible dbm cache file %r. '
+            'It was created as %r, which is not available in this Python.',
+            filename, dbm_type
+        )
+        _remove_dbm_cache(filename)
+
+
+def _dbm_arguments(cache_dir, filename):
+    cache_file = os.path.join(cache_dir, filename)
+    _prepare_dbm_cache(cache_file)
+    return {'filename': cache_file, 'lock_factory': MutexLock}
+
+
 def configure(cache_dir, replace=False):
     """Configure caches."""
     # memory cache
@@ -57,27 +92,22 @@ def configure(cache_dir, replace=False):
     # subliminal cache
     subliminal_cache.configure('dogpile.cache.dbm', replace_existing_backend=replace,
                                expiration_time=timedelta(days=30),
-                               arguments={
-                                   'filename': os.path.join(cache_dir, 'subliminal.dbm'),
-                                   'lock_factory': MutexLock})
+                               arguments=_dbm_arguments(cache_dir, 'subliminal.dbm'))
 
     # application cache
     cache.configure('dogpile.cache.dbm', replace_existing_backend=replace,
                     expiration_time=timedelta(days=1),
-                    arguments={'filename': os.path.join(cache_dir, 'application.dbm'),
-                               'lock_factory': MutexLock})
+                    arguments=_dbm_arguments(cache_dir, 'application.dbm'))
 
     # recommended series cache
     recommended_series_cache.configure('dogpile.cache.dbm', replace_existing_backend=replace,
                                        expiration_time=timedelta(days=7),
-                                       arguments={'filename': os.path.join(cache_dir, 'recommended.dbm'),
-                                                  'lock_factory': MutexLock})
+                                       arguments=_dbm_arguments(cache_dir, 'recommended.dbm'))
 
     # anidb (adba) series cache
     anidb_cache.configure('dogpile.cache.dbm', replace_existing_backend=replace,
                           expiration_time=timedelta(days=3),
-                          arguments={'filename': os.path.join(cache_dir, 'anidb.dbm'),
-                                     'lock_factory': MutexLock})
+                          arguments=_dbm_arguments(cache_dir, 'anidb.dbm'))
 
 
 def fallback():

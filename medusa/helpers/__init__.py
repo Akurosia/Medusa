@@ -249,11 +249,13 @@ def search_indexer_for_show_id(show_name, indexer=None, series_id=None, ui=None)
     return None, None, None
 
 
-def list_media_files(path):
+def list_media_files(path, recursive=True):
     """Get a list of files possibly containing media in a path.
 
     :param path: Path to check for files
     :type path: str
+    :param recursive: Walk subfolders
+    :type recursive: bool
     :return: list of files
     :rtype: list of str
     """
@@ -265,7 +267,7 @@ def list_media_files(path):
         full_cur_file = os.path.join(path, cur_file)
 
         # if it's a folder do it recursively
-        if os.path.isdir(full_cur_file) and not cur_file.startswith('.') and not cur_file == 'Extras':
+        if recursive and os.path.isdir(full_cur_file) and not cur_file.startswith('.') and not cur_file == 'Extras':
             files += list_media_files(full_cur_file)
 
         elif is_media_file(cur_file):

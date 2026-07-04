@@ -17,7 +17,7 @@ import warnings
 from builtins import map
 from builtins import str
 from collections import (
-    OrderedDict, namedtuple
+    OrderedDict, defaultdict, namedtuple
 )
 from itertools import chain, groupby
 
@@ -125,6 +125,7 @@ except ImportError:
 
 
 MILLIS_YEAR_1900 = datetime.datetime(year=1900, month=1, day=1).toordinal()
+SERIES_JSON_CACHE_TTL = datetime.timedelta(minutes=5)
 
 log = CustomBraceAdapter(logging.getLogger(__name__))
 log.logger.addHandler(logging.NullHandler())
@@ -269,6 +270,7 @@ class Series(TV):
         self._show_lists = ''
         self._templates = None
         self._search_templates = None
+        self._json_cache = {}
 
         other_show = Show.find_by_id(app.showList, self.indexer, self.series_id)
         if other_show is not None:
@@ -692,6 +694,7 @@ class Series(TV):
         """
         update_scene_exceptions(self, exceptions)
         self._aliases = set(chain(*itervalues(get_all_scene_exceptions(self))))
+        self.clear_json_cache()
 
         # If we added or removed aliases, we need to make sure these are reflected in the search templates.
         self._search_templates.templates = self._search_templates.generate()
@@ -711,6 +714,18 @@ class Series(TV):
     def xem_numbering(self):
         """Return series episode xem numbering."""
         return get_xem_numbering_for_show(self, refresh_data=False)
+
+    @property
+    def has_xem_numbering(self):
+        """Return whether this series has XEM numbering without loading the full mapping."""
+        main_db_con = db.DBConnection()
+        return bool(main_db_con.select(
+            'SELECT 1 FROM tv_episodes '
+            'WHERE indexer = ? AND showid = ? '
+            'AND (scene_season or scene_episode) != 0 '
+            'LIMIT 1',
+            [self.indexer, self.series_id]
+        ))
 
     @property
     def xem_absolute_numbering(self):
@@ -818,37 +833,25 @@ class Series(TV):
 
         return {int(x['season']): int(x['number_of_episodes']) for x in results}
 
-    def get_all_episodes(self, season=None, has_location=False):
+    def get_all_episodes(self, season=None, has_location=False, check_metadata=True):
         """Retrieve all episodes for this show given the specified filter.
 
         :param season:
         :type season: int or list of int
         :param has_location:
         :type has_location: bool
+        :param check_metadata:
+        :type check_metadata: bool
         :return:
         :rtype: list of Episode
         """
-        # subselection to detect multi-episodes early, share_location > 0
-        # If a multi-episode release has been downloaded. For example my.show.S01E1E2.1080p.WEBDL.mkv, you'll find the same location
-        # in the database for those episodes (S01E01 and S01E02). The query is to mark that the location for each episode is shared with another episode.
-        sql_selection = ('SELECT season, episode, (SELECT '
-                         '  COUNT (*) '
-                         'FROM '
-                         '  tv_episodes '
-                         'WHERE '
-                         '  indexer = tve.indexer AND showid = tve.showid '
-                         '  AND season = tve.season '
-                         "  AND location != '' "
-                         '  AND location = tve.location '
-                         '  AND episode != tve.episode) AS share_location '
-                         'FROM tv_episodes tve WHERE indexer = ? AND showid = ?'
-                         )
+        sql_selection = 'SELECT season, episode, location FROM tv_episodes WHERE indexer = ? AND showid = ?'
         sql_args = [self.indexer, self.series_id]
 
         if season is not None:
             season = helpers.ensure_list(season)
-            sql_selection += ' AND season IN (?)'
-            sql_args.append(','.join(map(text_type, season)))
+            sql_selection += ' AND season IN ({0})'.format(','.join('?' * len(season)))
+            sql_args += season
 
         if has_location:
             sql_selection += " AND location != ''"
@@ -858,40 +861,35 @@ class Series(TV):
 
         main_db_con = db.DBConnection()
         results = main_db_con.select(sql_selection, sql_args)
+        rows_by_location = defaultdict(list)
+        for cur_result in results:
+            if cur_result['location']:
+                rows_by_location[(cur_result['season'], cur_result['location'])].append(cur_result)
 
         ep_list = []
         for cur_result in results:
-            cur_ep = self.get_episode(cur_result['season'], cur_result['episode'])
+            cur_ep = self.get_episode(cur_result['season'], cur_result['episode'], check_metadata=check_metadata)
             if not cur_ep:
                 continue
 
             cur_ep.related_episodes = []
-            if cur_ep.location:
-                # if there is a location, check if it's a multi-episode (share_location > 0)
-                # and put them in related_episodes
-                if cur_result['share_location'] > 0:
-                    related_eps_result = main_db_con.select(
-                        'SELECT '
-                        '  season, episode '
-                        'FROM '
-                        '  tv_episodes '
-                        'WHERE '
-                        '  showid = ? '
-                        '  AND season = ? '
-                        '  AND location = ? '
-                        '  AND episode != ? '
-                        'ORDER BY episode ASC',
-                        [self.series_id, cur_ep.season, cur_ep.location, cur_ep.episode])
-                    for cur_related_ep in related_eps_result:
-                        related_ep = self.get_episode(cur_related_ep['season'], cur_related_ep['episode'])
-                        if related_ep and related_ep not in cur_ep.related_episodes:
-                            cur_ep.related_episodes.append(related_ep)
+            for cur_related_ep in rows_by_location[(cur_result['season'], cur_result['location'])]:
+                if cur_related_ep['episode'] == cur_result['episode']:
+                    continue
+
+                related_ep = self.get_episode(
+                    cur_related_ep['season'],
+                    cur_related_ep['episode'],
+                    check_metadata=check_metadata
+                )
+                if related_ep and related_ep not in cur_ep.related_episodes:
+                    cur_ep.related_episodes.append(related_ep)
             ep_list.append(cur_ep)
 
         return ep_list
 
     def get_episode(self, season=None, episode=None, filepath=None, no_create=False, absolute_number=None,
-                    air_date=None, should_cache=True):
+                    air_date=None, should_cache=True, check_metadata=True):
         """Return TVEpisode given the specified filter.
 
         :param season:
@@ -908,6 +906,8 @@ class Series(TV):
         :type air_date: datetime.datetime
         :param should_cache:
         :type should_cache: bool
+        :param check_metadata:
+        :type check_metadata: bool
         :return:
         :rtype: Episode
         """
@@ -967,14 +967,16 @@ class Series(TV):
             self.episodes[season] = {}
 
         if episode in self.episodes[season] and self.episodes[season][episode] is not None:
+            if check_metadata:
+                self.episodes[season][episode].check_for_meta_files()
             return self.episodes[season][episode]
         elif no_create:
             return None
 
         if filepath:
-            ep = Episode(self, season, episode, filepath)
+            ep = Episode(self, season, episode, filepath, check_metadata=check_metadata)
         else:
-            ep = Episode(self, season, episode)
+            ep = Episode(self, season, episode, check_metadata=check_metadata)
 
         if ep is not None and should_cache:
             self.episodes[season][episode] = ep
@@ -1089,18 +1091,71 @@ class Series(TV):
 
         return result
 
-    def load_episodes_from_dir(self):
+    def _season_scan_dirs(self, seasons):
+        """Return season folders that should be scanned for a season-scoped refresh."""
+        if not os.path.isdir(self.location):
+            return []
+
+        root_dir = os.path.normpath(self.location)
+        season_dirs = set()
+
+        main_db_con = db.DBConnection()
+        sql = (
+            'SELECT DISTINCT location FROM tv_episodes '
+            'WHERE indexer = ? AND showid = ? '
+            "AND location != '' AND season IN ({0})"
+        ).format(','.join('?' * len(seasons)))
+        for row in main_db_con.select(sql, [self.indexer, self.series_id] + seasons):
+            season_dir = os.path.normpath(os.path.dirname(row['location']))
+            if season_dir != root_dir and season_dir.startswith(root_dir) and os.path.isdir(season_dir):
+                season_dirs.add(season_dir)
+
+        season_names = set()
+        for season in seasons:
+            if season == 0:
+                season_names.update(['specials', 'season 0', 'season 00'])
+                continue
+
+            season_names.update([
+                'season {0}'.format(season),
+                'season {0:02d}'.format(season),
+                's{0}'.format(season),
+                's{0:02d}'.format(season),
+            ])
+
+        for cur_file in os.listdir(root_dir):
+            full_cur_file = os.path.join(root_dir, cur_file)
+            if os.path.isdir(full_cur_file) and cur_file.lower() in season_names:
+                season_dirs.add(os.path.normpath(full_cur_file))
+
+        return sorted(season_dirs)
+
+    def load_episodes_from_dir(self, seasons=None):
         """Find all media files in the show folder and create episodes for as many as possible."""
         if not app.CREATE_MISSING_SHOW_DIRS and not self.is_location_valid():
             log.warning(u"{id}: Show directory doesn't exist, not loading episodes from disk",
                         {'id': self.series_id})
             return
 
-        log.debug('{id}: Loading all episodes from the show directory: {location}',
-                  {'id': self.series_id, 'location': self.location})
+        if seasons is not None:
+            seasons = [try_int(season, season) for season in helpers.ensure_list(seasons)]
+
+        log.debug(
+            '{id}: Loading episodes from the show directory: {location}{season_msg}', {
+                'id': self.series_id,
+                'location': self.location,
+                'season_msg': ' for season(s) {0}'.format(seasons) if seasons else '',
+            }
+        )
 
         # get file list
-        media_files = helpers.list_media_files(self.location)
+        if seasons:
+            media_files = helpers.list_media_files(self.location, recursive=False)
+            for season_dir in self._season_scan_dirs(seasons):
+                media_files += helpers.list_media_files(season_dir)
+        else:
+            media_files = helpers.list_media_files(self.location)
+        media_files = sorted(set(media_files))
         log.debug('{id}: Found files: {media_files}',
                   {'id': self.series_id, 'media_files': media_files})
 
@@ -1112,7 +1167,7 @@ class Series(TV):
             log.debug('{id}: Creating episode from: {location}',
                       {'id': self.series_id, 'location': media_file})
             try:
-                cur_episode = self.make_ep_from_file(os.path.join(self.location, media_file))
+                cur_episode = self.make_ep_from_file(os.path.join(self.location, media_file), seasons=seasons)
             except (ShowNotFoundException, EpisodeNotFoundException) as error:
                 log.warning(
                     u'{id}: Episode {location} returned an exception {error_msg}', {
@@ -1162,6 +1217,7 @@ class Series(TV):
         if sql_l:
             main_db_con = db.DBConnection()
             main_db_con.mass_action(sql_l)
+            self.clear_json_cache()
 
     def load_episodes_from_db(self, seasons=None):
         """Load episodes from database.
@@ -1313,6 +1369,29 @@ class Series(TV):
 
         scanned_eps = {}
 
+        main_db_con = db.DBConnection()
+        sql = (
+            'SELECT '
+            '  season, '
+            '  episode, '
+            '  episode_id, '
+            '  subtitles '
+            'FROM '
+            '  tv_episodes '
+            'WHERE '
+            '  indexer = ? '
+            '  AND showid = ?'
+        )
+        params = [self.indexer, self.series_id]
+        if seasons:
+            sql += ' AND season IN ({0})'.format(','.join('?' * len(seasons)))
+            params += seasons
+
+        episode_db_rows = {
+            (int(row['season']), int(row['episode'])): row
+            for row in main_db_con.select(sql, params)
+        }
+
         sql_l = []
         for season in indexed_show:
             # Only index episodes for seasons that are currently being updated.
@@ -1339,20 +1418,24 @@ class Series(TV):
                     continue
                 else:
                     try:
-                        ep.load_from_indexer(tvapi=self.indexer_api)
+                        ep.load_from_indexer(
+                            tvapi=self.indexer_api,
+                            cached_season=indexed_show[season],
+                            save=False
+                        )
                     except EpisodeDeletedException:
                         log.debug('{id}: The episode {ep} was deleted, skipping the rest of the load',
                                   {'id': self.series_id, 'ep': episode_num(season, episode)})
                         continue
 
                 with ep.lock:
-                    sql_l.append(ep.get_sql())
+                    sql_l.append(ep.get_sql(episode_db_rows.get((season, episode), False)))
 
                 scanned_eps[season][episode] = True
 
         if sql_l:
-            main_db_con = db.DBConnection()
             main_db_con.mass_action(sql_l)
+            self.clear_json_cache()
 
         # Done updating save last update date
         self.last_update_indexer = datetime.date.today().toordinal()
@@ -1382,6 +1465,7 @@ class Series(TV):
         if sql_l:
             main_db_con = db.DBConnection()
             main_db_con.mass_action(sql_l)
+            self.clear_json_cache()
 
     def __get_images(self, metadata_provider):
         fanart_result = poster_result = banner_result = False
@@ -1406,11 +1490,13 @@ class Series(TV):
             or season_all_banner_result
         )
 
-    def make_ep_from_file(self, filepath):
+    def make_ep_from_file(self, filepath, seasons=None):
         """Make a TVEpisode object from a media file.
 
         :param filepath:
         :type filepath: str
+        :param seasons: Limit matching to these seasons
+        :type seasons: list[int]
         :return:
         :rtype: Episode
         """
@@ -1440,6 +1526,17 @@ class Series(TV):
 
         # for now lets assume that any episode in the show directory belongs to that show
         season = parse_result.season_number if parse_result.season_number is not None else 1
+        if seasons and season not in seasons:
+            log.debug(
+                '{indexer_id}: Ignoring {filepath}; parsed season {season} is outside selected season(s) {seasons}', {
+                    'indexer_id': self.series_id,
+                    'filepath': filepath,
+                    'season': season,
+                    'seasons': seasons,
+                }
+            )
+            return None
+
         root_ep = None
 
         sql_l = []
@@ -1483,6 +1580,7 @@ class Series(TV):
         if sql_l:
             main_db_con = db.DBConnection()
             main_db_con.mass_action(sql_l)
+            self.clear_json_cache()
 
         # creating metafiles on the root should be good enough
         if root_ep:
@@ -1927,6 +2025,7 @@ class Series(TV):
 
         main_db_con = db.DBConnection()
         main_db_con.mass_action(sql_l)
+        self.clear_json_cache()
 
         action = ('delete', 'trash')[app.TRASH_REMOVE_SHOW]
 
@@ -2103,9 +2202,11 @@ class Series(TV):
                     cache_db_con.action(query, params)
                     return True
 
-    def refresh_dir(self):
+    def refresh_dir(self, seasons=None):
         """Refresh show using its location.
 
+        :param seasons: Limit refresh to these seasons.
+        :type seasons: list[int]
         :return:
         :rtype: bool
         """
@@ -2113,15 +2214,18 @@ class Series(TV):
         if not app.CREATE_MISSING_SHOW_DIRS and not self.is_location_valid():
             return False
 
+        if seasons is not None:
+            seasons = [try_int(season, season) for season in helpers.ensure_list(seasons)]
+
         # load from dir
-        self.load_episodes_from_dir()
+        self.load_episodes_from_dir(seasons=seasons)
 
         # run through all locations from DB, check that they exist
         log.debug(u"{id}: Loading all episodes from '{show}' with a location from the database",
                   {'id': self.series_id, 'show': self.name})
 
         main_db_con = db.DBConnection()
-        sql_results = main_db_con.select(
+        sql = (
             'SELECT '
             '  season, episode, location '
             'FROM '
@@ -2129,7 +2233,12 @@ class Series(TV):
             'WHERE '
             '  indexer = ?'
             '  AND showid = ? '
-            "  AND location != ''", [self.indexer, self.series_id])
+            "  AND location != ''")
+        params = [self.indexer, self.series_id]
+        if seasons:
+            sql += ' AND season IN ({0})'.format(','.join('?' * len(seasons)))
+            params += seasons
+        sql_results = main_db_con.select(sql, params)
 
         sql_l = []
         for ep in sql_results:
@@ -2222,12 +2331,18 @@ class Series(TV):
                                     }
                                 )
 
-        # Clean up any empty season folders after deletion of associated files
-        helpers.delete_empty_folders(self.location)
+        # Clean up empty folders after deletion of associated files. For season
+        # refreshes, leave unrelated season folders alone.
+        if seasons:
+            for season_dir in self._season_scan_dirs(seasons):
+                helpers.delete_empty_folders(season_dir)
+        else:
+            helpers.delete_empty_folders(self.location)
 
         if sql_l:
             main_db_con = db.DBConnection()
             main_db_con.mass_action(sql_l)
+            self.clear_json_cache()
 
     def download_subtitles(self):
         """Download subtitles."""
@@ -2280,6 +2395,8 @@ class Series(TV):
         """Save to database."""
         if not self.dirty:
             return
+
+        self.clear_json_cache()
 
         log.debug('{id}: Saving to database: {show}',
                   {'id': self.series_id, 'show': self.name})
@@ -2365,12 +2482,68 @@ class Series(TV):
         to_return += f'templates: {self.use_templates}\n'
         return to_return
 
-    def to_json(self, detailed=False, episodes=False):
+    def clear_json_cache(self):
+        """Clear cached API JSON representations for this series."""
+        if getattr(self, '_json_cache', None):
+            self._json_cache.clear()
+
+    def _json_cache_key(self, detailed=False, episodes=False, settings=False, numbering=True, has_xem_numbering=None):
+        """Return the cache key for an API JSON representation."""
+        return (
+            bool(detailed),
+            bool(episodes),
+            bool(settings),
+            bool(numbering),
+            has_xem_numbering,
+        )
+
+    def _get_cached_json(self, cache_key, detailed=False):
+        """Return a copy of a cached JSON representation when it is still fresh."""
+        json_cache = getattr(self, '_json_cache', None)
+        if not json_cache:
+            return None
+
+        cached = json_cache.get(cache_key)
+        if not cached:
+            return None
+
+        cached_at, cached_data = cached
+        if datetime.datetime.now() - cached_at > SERIES_JSON_CACHE_TTL:
+            json_cache.pop(cache_key, None)
+            return None
+
+        data = copy.deepcopy(cached_data)
+
+        # Queue status can change without the series itself becoming dirty.
+        if detailed:
+            data['showQueueStatus'] = self.show_queue_status
+
+        return data
+
+    def _set_cached_json(self, cache_key, data):
+        """Store a copy of an API JSON representation."""
+        if not hasattr(self, '_json_cache'):
+            self._json_cache = {}
+
+        self._json_cache[cache_key] = (datetime.datetime.now(), copy.deepcopy(data))
+
+    def to_json(self, detailed=False, episodes=False, settings=False, numbering=True, has_xem_numbering=None):
         """
         Return JSON representation.
 
         :param detailed: Append seasons & episodes data as well
         """
+        cache_key = self._json_cache_key(
+            detailed=detailed,
+            episodes=episodes,
+            settings=settings,
+            numbering=numbering,
+            has_xem_numbering=has_xem_numbering,
+        )
+        cached_data = self._get_cached_json(cache_key, detailed=detailed)
+        if cached_data is not None:
+            return cached_data
+
         data = {}
         data['id'] = {}
         data['id'][self.indexer_name] = self.series_id
@@ -2436,11 +2609,18 @@ class Series(TV):
         data['config']['airdateOffset'] = self.airdate_offset
         data['config']['showLists'] = self.show_lists
 
-        if detailed:
+        if detailed or settings:
             data['config']['searchTemplates'] = self.search_templates.to_json()
 
-        # Moved from detailed, as the home page, needs it to display the Xem icon.
-        data['xemNumbering'] = numbering_tuple_to_dict(self.xem_numbering)
+        # The home page only needs a boolean for the XEM icon. Avoid serializing
+        # the full mapping for large shows unless the caller explicitly needs it.
+        if numbering:
+            xem_numbering = self.xem_numbering
+            data['hasXemNumbering'] = bool(xem_numbering)
+            data['xemNumbering'] = numbering_tuple_to_dict(xem_numbering)
+        else:
+            data['hasXemNumbering'] = self.has_xem_numbering if has_xem_numbering is None else has_xem_numbering
+            data['xemNumbering'] = []
 
         # These are for now considered anime-only options
         if self.is_anime:
@@ -2462,7 +2642,7 @@ class Series(TV):
             data['seasonCount'] = dict_to_array(self.get_all_seasons(), key='season', value='episodeCount')
 
         if episodes:
-            all_episodes = self.get_all_episodes()
+            all_episodes = self.get_all_episodes(check_metadata=False)
             data['episodeCount'] = len(all_episodes)
             last_episode = all_episodes[-1] if all_episodes else None
             if self.status == 'Ended' and last_episode and last_episode.airdate:
@@ -2472,6 +2652,7 @@ class Series(TV):
                                for season, v in
                                groupby([ep.to_json() for ep in all_episodes], lambda item: item['season'])]
 
+        self._set_cached_json(cache_key, data)
         return data
 
     def get_allowed_qualities(self):
@@ -2589,6 +2770,7 @@ class Series(TV):
     @search_templates.setter
     def search_templates(self, templates):
         self._search_templates.update(templates)
+        self.clear_json_cache()
 
     def want_episode(self, season, episode, quality,
                      download_current_quality=False, search_type=None):

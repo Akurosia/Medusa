@@ -228,7 +228,7 @@ class Episode(TV):
         'show': 'series',
     }
 
-    def __init__(self, series, season, episode, filepath=''):
+    def __init__(self, series, season, episode, filepath='', check_metadata=True):
         """Instantiate a Episode with database information."""
         super(Episode, self).__init__(
             int(series.indexer) if series else 0,
@@ -265,7 +265,8 @@ class Episode(TV):
         self.watched = False
         if series:
             self._specify_episode(self.season, self.episode)
-            self.check_for_meta_files()
+            if check_metadata:
+                self.check_for_meta_files()
 
     def __getattr__(self, item):
         """Get attribute values for deprecated attributes."""
@@ -692,6 +693,8 @@ class Episode(TV):
             self.subtitles_searchcount = sql_results[0]['subtitles_searchcount']
             self.subtitles_lastsearch = sql_results[0]['subtitles_lastsearch']
             self.airdate = date.fromordinal(int(sql_results[0]['airdate']))
+            self.hasnfo = bool(sql_results[0]['hasnfo'])
+            self.hastbn = bool(sql_results[0]['hastbn'])
             self.status = int(sql_results[0]['status'] or INVALID)
             self.quality = int(sql_results[0]['quality'] or Quality.NA)
             self.file_size = int(sql_results[0]['file_size'] or 0)
@@ -770,7 +773,7 @@ class Episode(TV):
 
         return True
 
-    def load_from_indexer(self, season=None, episode=None, tvapi=None, cached_season=None):
+    def load_from_indexer(self, season=None, episode=None, tvapi=None, cached_season=None, save=True):
         """Load episode information from indexer.
 
         :param season:
@@ -779,6 +782,7 @@ class Episode(TV):
         :type episode: int
         :param tvapi:
         :param cached_season:
+        :param save: Save the episode immediately. Bulk callers can defer this and batch writes.
         :return:
         :rtype: bool
         """
@@ -989,7 +993,8 @@ class Episode(TV):
             )
             self.status = INVALID
 
-        self.save_to_db()
+        if save:
+            self.save_to_db()
 
     def __load_from_nfo(self, location):
 
@@ -1186,6 +1191,8 @@ class Episode(TV):
 
     def delete_episode(self):
         """Delete episode from database."""
+        self.series.clear_json_cache()
+
         log.debug(
             '{id}: Deleting {series} {ep} from the DB', {
                 'id': self.series.series_id,
@@ -1213,7 +1220,7 @@ class Episode(TV):
         )
         raise EpisodeDeletedException()
 
-    def get_sql(self):
+    def get_sql(self, db_data=None):
         """Create SQL queue for this episode if any of its data has been changed since the last save."""
         if not self.dirty:
             log.debug('{id}: Not creating SQL query - record is not dirty',
@@ -1221,19 +1228,22 @@ class Episode(TV):
             return
 
         try:
-            main_db_con = db.DBConnection()
-            rows = main_db_con.select(
-                'SELECT '
-                '  episode_id, '
-                '  subtitles '
-                'FROM '
-                '  tv_episodes '
-                'WHERE '
-                '  indexer = ?'
-                '  AND showid = ? '
-                '  AND season = ? '
-                '  AND episode = ?',
-                [self.series.indexer, self.series.series_id, self.season, self.episode])
+            if db_data is None:
+                main_db_con = db.DBConnection()
+                rows = main_db_con.select(
+                    'SELECT '
+                    '  episode_id, '
+                    '  subtitles '
+                    'FROM '
+                    '  tv_episodes '
+                    'WHERE '
+                    '  indexer = ?'
+                    '  AND showid = ? '
+                    '  AND season = ? '
+                    '  AND episode = ?',
+                    [self.series.indexer, self.series.series_id, self.season, self.episode])
+            else:
+                rows = [db_data] if db_data else []
 
             ep_id = None
             if rows:
@@ -1366,6 +1376,8 @@ class Episode(TV):
         """Save this episode to the database if any of its data has been changed since the last save."""
         if not self.dirty:
             return
+
+        self.series.clear_json_cache()
 
         log.debug('{id}: Saving episode to database: {show} {ep}',
                   {'id': self.series.series_id,
@@ -2020,6 +2032,7 @@ class Episode(TV):
         if sql_l:
             main_db_con = db.DBConnection()
             main_db_con.mass_action(sql_l)
+            self.series.clear_json_cache()
 
     def airdate_modify_stamp(self):
         """Make the modify date and time of a file reflect the series air date and time.

@@ -7,13 +7,9 @@ import { mapActions, mapMutations } from 'vuex';
 import { isDevelopment } from './utils/core';
 import { App } from './components';
 
-Vue.config.devtools = true;
-Vue.config.performance = true;
-
-if (document.body.getAttribute('developer') === 'True') {
-    Vue.config.devtools = true;
-    Vue.config.performance = true;
-}
+const developerMode = document.body.getAttribute('developer') === 'True';
+Vue.config.devtools = isDevelopment || developerMode;
+Vue.config.performance = isDevelopment || developerMode;
 
 registerPlugins();
 
@@ -30,7 +26,7 @@ export default new Vue({
         };
     },
     async mounted() {
-        const { getShows, setLoadingDisplay, setLoadingFinished } = this;
+        const { getShows, loadShowsFromStore, setLoadingDisplay, setLoadingFinished } = this;
 
         if (isDevelopment) {
             console.log('App Mounted!');
@@ -56,6 +52,7 @@ export default new Vue({
 
                 // Let's bootstrap the app with essential data like the shows.
                 // For the storing of the shows in the browsers cache, we depend on config/general.
+                loadShowsFromStore();
                 getShows()
                     .then(() => {
                         console.log('Finished loading all shows.');
@@ -75,6 +72,7 @@ export default new Vue({
     methods: {
         ...mapActions({
             getShows: 'getShows',
+            loadShowsFromStore: 'loadShowsFromStore',
             connect: 'connect'
 
         }),
@@ -90,4 +88,3 @@ export default new Vue({
         }
     }
 }).$mount('#app-wrapper');
-

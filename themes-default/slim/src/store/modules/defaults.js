@@ -84,6 +84,7 @@ const state = {
         // ===========================
 
         showQueueStatus: [],
+        hasXemNumbering: false,
         xemNumbering: [],
         sceneAbsoluteNumbering: [],
         xemAbsoluteNumbering: [],

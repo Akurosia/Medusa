@@ -12,7 +12,10 @@
         <app-link :href="`home/displayShow?showslug=${showSlug}`">
             <svg class="back-arrow"><use xlink:href="images/svg/go-back-arrow.svg#arrow" /></svg>
         </app-link>
-        <h3>Preview of the proposed name changes</h3>
+        <h3>
+            Preview of the proposed name changes
+            <span v-if="season !== null"> - {{ season === 0 ? 'Specials' : `Season ${season}` }}</span>
+        </h3>
 
         <blockquote>
             <template v-if="show.config.airByDate && postprocessing.naming.enableCustomNamingAirByDate">{{postprocessing.naming.patternAirByDate}}</template>
@@ -38,7 +41,7 @@
                 </tr>
                 <tr class="seasoncols" :id="`season-${season.season}-cols`">
                     <th class="col-checkbox">
-                        <input :disabled="season.episodes.filter(episode => namingChanged(episode).result).length === 0" type="checkbox" class="seasonCheck" @click="check($event.currentTarget.checked, season.season)" :id="`season-${season.season}-cols`">
+                        <input :disabled="season.episodes.filter(episode => episode.naming.result).length === 0" type="checkbox" class="seasonCheck" @click="check($event.currentTarget.checked, season.season)" :id="`season-${season.season}-cols`">
                     </th>
                     <th class="nowrap">Episode</th>
                     <th class="col-name">Old Location</th>
@@ -46,13 +49,13 @@
                 </tr>
             </thead>
             <tbody>
-                <tr v-for="episode in season.episodes" :key="episode.slug" :class="[`season-${season.season}`, namingChanged(episode).result ? 'wanted' : 'good']" class="seasonstyle">
+                <tr v-for="episode in season.episodes" :key="episode.slug" :class="[`season-${season.season}`, episode.naming.result ? 'wanted' : 'good']" class="seasonstyle">
                     <td class="col-checkbox">
-                        <input :disabled="!namingChanged(episode).result" v-model="episode.selected" type="checkbox" class="epCheck" :id="episode.slug" :name="episode.slug">
+                        <input :disabled="!episode.naming.result" v-model="episode.selected" type="checkbox" class="epCheck" :id="episode.slug" :name="episode.slug">
                     </td>
                     <td align="center" valign="top" class="nowrap">{{ formatRelated(episode)}}</td>
-                    <td width="50%" class="col-name">{{namingChanged(episode).currentLocation}}</td>
-                    <td width="50%" class="col-name">{{namingChanged(episode).newLocation}}</td>
+                    <td width="50%" class="col-name">{{episode.naming.currentLocation}}</td>
+                    <td width="50%" class="col-name">{{episode.naming.newLocation}}</td>
                 </tr>
             </tbody>
         </table>
@@ -86,9 +89,8 @@ export default {
         };
     },
     async mounted() {
-        // We need detailed info for the xem / scene exceptions, so let's get it.
         const { showSlug } = this;
-        await this.getShow({ showSlug, detailed: true });
+        await this.getShow({ showSlug, settings: true, numbering: false });
         await this.setCurrentShow(showSlug);
 
         this.loadTestRename();
@@ -109,6 +111,10 @@ export default {
         showSlug() {
             const { slug } = this;
             return slug || this.$route.query.showslug;
+        },
+        season() {
+            const season = Number.parseInt(this.$route.query.season, 10);
+            return Number.isNaN(season) ? null : season;
         },
         /**
          * Create a structure with episodes grouped by season.
@@ -135,19 +141,20 @@ export default {
             setCurrentShow: 'setCurrentShow'
         }),
         async loadTestRename() {
-            const { showSlug } = this;
+            const { showSlug, season } = this;
             try {
                 this.loading = true;
                 const url = `series/${showSlug}/operation`;
-                const data = [];
-                const reversedSeasons = this.show.seasonCount.slice().sort((a, b) => b.season - a.season);
-                for (const { season } of reversedSeasons) {
-                    // eslint-disable-next-line no-await-in-loop
-                    const result = await this.client.api.post(url, { type: 'TEST_RENAME', season }, { timeout: 120000 });
-                    data.push(...result.data);
+                const payload = { type: 'TEST_RENAME' };
+                if (season !== null) {
+                    payload.season = season;
                 }
+                const result = await this.client.api.post(url, payload, { timeout: 600000 });
 
-                this.episodeRenameList = data;
+                this.episodeRenameList = result.data.map(episode => ({
+                    ...episode,
+                    naming: this.namingChanged(episode)
+                }));
             } catch (error) {
                 this.$snotify.error(
                     `Error while trying to get the test rename list for ${showSlug}`,
@@ -179,7 +186,7 @@ export default {
             try {
                 this.loading = true;
                 const url = `series/${showSlug}/operation`;
-                await this.client.api.post(url, { type: 'RENAME_EPISODES', episodes }, { timeout: 120000 });
+                await this.client.api.post(url, { type: 'RENAME_EPISODES', episodes }, { timeout: 600000 });
                 this.$router.push({ name: 'show', query: { showslug: showSlug } });
             } catch (error) {
                 this.$snotify.error(
@@ -200,9 +207,9 @@ export default {
             return `${first.episode}-${last.episode}`;
         },
         check(value, season = null) {
-            const { episodeRenameList, namingChanged } = this;
+            const { episodeRenameList } = this;
             for (const episode of episodeRenameList) {
-                if (!namingChanged(episode).result) {
+                if (!episode.naming.result) {
                     continue;
                 }
                 if (season === null) {

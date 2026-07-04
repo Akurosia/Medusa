@@ -400,6 +400,17 @@ const manageRoutes = [
         component: () => import('../components/manage-searches.vue')
     },
     {
+        path: '/manage/newDownloads',
+        name: 'manageNewDownloads',
+        meta: {
+            title: 'New Downloads',
+            header: 'New Downloads',
+            topMenu: 'manage',
+            converted: true
+        },
+        component: () => import('../components/manage-new-downloads.vue')
+    },
+    {
         path: '/manage/massEdit',
         name: 'manageMassEdit',
         meta: {

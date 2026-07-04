@@ -12,7 +12,7 @@
             </div>
             <div class="col-lg-12">
                 <div class="show-option">
-                    <input type="search" v-model="filterByName" class="form-control form-control-inline input-sm input200" placeholder="Filter Show Name">
+                    <input type="search" v-model="localFilterByName" class="form-control form-control-inline input-sm input200" placeholder="Filter Show Name">
                 </div>
                 <div class="show-option">
                     <!-- These need to patch apiv2 on change! -->
@@ -49,6 +49,7 @@
 <script>
 
 import { mapActions, mapGetters, mapState } from 'vuex';
+import debounce from 'lodash/debounce';
 import Banner from './banner.vue';
 import Simple from './simple.vue';
 import Poster from './poster.vue';
@@ -91,6 +92,7 @@ export default {
     },
     data() {
         return {
+            localFilterByName: '',
             postSortDirOptions: [
                 { value: '0', text: 'Descending' },
                 { value: '1', text: 'Ascending' }
@@ -103,6 +105,17 @@ export default {
                 { text: 'Indexer', value: 'indexer' }
             ]
         };
+    },
+    created() {
+        this.localFilterByName = this.filterByName;
+        this.setFilterByNameDebounced = debounce(value => {
+            this.setLayoutLocal({ key: 'showFilterByName', value });
+        }, 150);
+    },
+    beforeDestroy() {
+        if (this.setFilterByNameDebounced) {
+            this.setFilterByNameDebounced.cancel();
+        }
     },
     computed: {
         ...mapState({
@@ -118,10 +131,6 @@ export default {
                 const { showFilterByName } = local;
 
                 return showFilterByName;
-            },
-            set(value) {
-                const { setLayoutLocal } = this;
-                setLayoutLocal({ key: 'showFilterByName', value });
             }
         },
         mappedLayout() {
@@ -160,6 +169,16 @@ export default {
             setPosterSortDir: 'setPosterSortDir',
             setLayoutLocal: 'setLayoutLocal'
         })
+    },
+    watch: {
+        localFilterByName(value) {
+            this.setFilterByNameDebounced(value);
+        },
+        filterByName(value) {
+            if (value !== this.localFilterByName) {
+                this.localFilterByName = value;
+            }
+        }
     }
 };
 </script>

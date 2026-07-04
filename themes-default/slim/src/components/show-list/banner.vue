@@ -85,7 +85,7 @@
                 </span>
 
                 <span v-else-if="props.column.label === 'Xem'" class="align-center">
-                    <img :src="`images/${props.row.xemNumbering && props.row.xemNumbering.length !== 0 ? 'yes' : 'no'}16.png`" :alt="props.row.xemNumbering && props.row.xemNumbering.length !== 0 ? 'yes' : 'no'" width="16" height="16">
+                    <img :src="`images/${props.row.hasXemNumbering || (props.row.xemNumbering && props.row.xemNumbering.length !== 0) ? 'yes' : 'no'}16.png`" :alt="props.row.hasXemNumbering || (props.row.xemNumbering && props.row.xemNumbering.length !== 0) ? 'yes' : 'no'" width="16" height="16">
                 </span>
 
                 <span v-else class="align-center">

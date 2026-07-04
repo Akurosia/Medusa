@@ -29,6 +29,7 @@ from medusa.server.api.v2.guessit import GuessitHandler
 from medusa.server.api.v2.history import HistoryHandler
 from medusa.server.api.v2.internal import InternalHandler
 from medusa.server.api.v2.log import LogHandler
+from medusa.server.api.v2.new_downloads import NewDownloadsHandler
 from medusa.server.api.v2.notifications import NotificationsHandler
 from medusa.server.api.v2.postprocess import PostProcessHandler
 from medusa.server.api.v2.providers import ProvidersHandler
@@ -58,7 +59,10 @@ import six
 
 from tornado.httpserver import HTTPServer
 from tornado.ioloop import IOLoop
-from tornado.netutil import bind_unix_socket
+try:
+    from tornado.netutil import bind_unix_socket
+except ImportError:
+    bind_unix_socket = None
 from tornado.web import (
     Application,
     RedirectHandler,
@@ -110,6 +114,9 @@ def get_apiv2_handlers(base):
 
         # /api/v2/history
         HistoryHandler.create_app_handler(base),
+
+        # /api/v2/new-downloads
+        NewDownloadsHandler.create_app_handler(base),
 
         # /api/v2/search
         SearchHandler.create_app_handler(base),
@@ -363,6 +370,10 @@ class AppWebServer(threading.Thread):
                 'port': self.options['port'], 'web_root': self.options['theme_path']
             })
         if unix_socket:
+            if bind_unix_socket is None:
+                log.error('Cannot start the web server: unix sockets are not supported on this platform.')
+                os._exit(1)  # pylint: disable=protected-access
+
             log.info('Starting Medusa on unix://{path}{web_root}/', {
                 'path': unix_socket, 'web_root': self.options['theme_path']
             })

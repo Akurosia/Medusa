@@ -57,7 +57,20 @@ class EpisodeHandler(BaseRequestHandler):
         if not episode_slug:
             detailed = self._parse_boolean(self.get_argument('detailed', default=False))
             season = self._parse(self.get_argument('season', None), int)
-            data = [e.to_json(detailed=detailed) for e in series.get_all_episodes(season=season)]
+            seasons = self.get_argument('seasons', None)
+            if seasons:
+                try:
+                    season = [int(item) for item in seasons.split(',') if item != '']
+                except ValueError:
+                    return self._bad_request('Invalid seasons parameter')
+
+            data = [
+                e.to_json(detailed=detailed)
+                for e in series.get_all_episodes(season=season, check_metadata=detailed)
+            ]
+            if seasons:
+                return self._ok(data=data)
+
             return self._paginate(data, sort='airDate')
 
         episode_number = EpisodeNumber.from_slug(episode_slug)

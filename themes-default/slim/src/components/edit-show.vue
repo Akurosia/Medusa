@@ -97,6 +97,7 @@
                                         :show-name="show.name"
                                         :blacklist="show.config.release.blacklist"
                                         :whitelist="show.config.release.whitelist"
+                                        :auto-fetch="false"
                                         @change="onChangeReleaseGroupsAnime"
                                     />
                                 </config-template>
@@ -390,8 +391,8 @@ export default {
         loadShow() {
             const { setCurrentShow, getShow, showSlug } = this;
 
-            // We need detailed info for the xem / scene exceptions, so let's get it.
-            getShow({ showSlug, detailed: true });
+            // Load settings data without the large episode/numbering payload used by the display page.
+            getShow({ showSlug, settings: true, numbering: false });
 
             // Let's tell the store which show we currently want as current.
             // Run this after getShow(), as it will trigger the initializeEpisodes() method.

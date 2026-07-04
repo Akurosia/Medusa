@@ -2,7 +2,7 @@
 """Request handler for statistics."""
 from __future__ import unicode_literals
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from textwrap import dedent
 
 from medusa import db
@@ -22,6 +22,9 @@ from medusa.server.api.v2.base import BaseRequestHandler
 from medusa.show.show import Show
 
 from six.moves import map
+
+STATS_CACHE_TTL = timedelta(seconds=60)
+STATS_CACHE = {}
 
 
 class StatsHandler(BaseRequestHandler):
@@ -54,11 +57,21 @@ class StatsHandler(BaseRequestHandler):
 
 def overall_stats():
     """Generate overall library statistics."""
-    return Show.overall_stats()
+    cached = STATS_CACHE.get('overall')
+    if cached and datetime.now() - cached[0] < STATS_CACHE_TTL:
+        return cached[1]
+
+    data = Show.overall_stats()
+    STATS_CACHE['overall'] = (datetime.now(), data)
+    return data
 
 
 def per_show_stats():
     """Generate per-show library statistics."""
+    cached = STATS_CACHE.get('show')
+    if cached and datetime.now() - cached[0] < STATS_CACHE_TTL:
+        return cached[1]
+
     pre_today = [SKIPPED, WANTED, FAILED]
     snatched = [SNATCHED, SNATCHED_PROPER, SNATCHED_BEST]
     downloaded = [DOWNLOADED, ARCHIVED]
@@ -137,4 +150,5 @@ def per_show_stats():
             cur_result['epAirsPrev'] = parse_date_time(cur_result['epAirsPrev'], cur_result['airs'], cur_result['network'])
 
     stats_data['maxDownloadCount'] *= 100
+    STATS_CACHE['show'] = (datetime.now(), stats_data)
     return stats_data

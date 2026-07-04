@@ -50,6 +50,7 @@
                             <li><app-link href="manage/changeIndexer/"><i class="menu-icon-manage-change" />&nbsp;Change Indexer</app-link></li>
                             <li><app-link href="manage/backlogOverview/"><i class="menu-icon-backlog-view" />&nbsp;Backlog Overview</app-link></li>
                             <li><app-link href="manage/manageSearches/"><i class="menu-icon-manage-searches" />&nbsp;Manage Searches</app-link></li>
+                            <li><app-link href="manage/newDownloads/"><i class="menu-icon-postprocess" />&nbsp;New Downloads</app-link></li>
                             <li><app-link href="manage/episodeStatuses/"><i class="menu-icon-manage2" />&nbsp;Episode Status Management</app-link></li>
                             <li v-if="linkVisible.plex"><a href="home/updatePLEX/" @click.prevent="updatePlex"><i class="menu-icon-plex" />&nbsp;Update PLEX</a></li>
                             <li v-if="linkVisible.kodi"><a href="home/updateKODI/" @click.prevent="updateKodi"><i class="menu-icon-kodi" />&nbsp;Update KODI</a></li>

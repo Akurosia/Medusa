@@ -126,7 +126,6 @@ export const showlistTableMixin = {
         parsePrevDateFn(row) {
             const { fuzzyParseDateTime } = this;
             if (row.prevAirDate) {
-                console.log(`Calculating time for show ${row.title} prev date: ${row.prevAirDate}`);
                 return fuzzyParseDateTime(row.prevAirDate);
             }
 
@@ -135,14 +134,13 @@ export const showlistTableMixin = {
         parseNextDateFn(row) {
             const { fuzzyParseDateTime } = this;
             if (row.nextAirDate) {
-                console.log(`Calculating time for show ${row.title} next date: ${row.nextAirDate}`);
                 return fuzzyParseDateTime(row.nextAirDate);
             }
 
             return '';
         },
         fealdFnXem(row) {
-            return row.xemNumbering && row.xemNumbering.length !== 0;
+            return row.hasXemNumbering || (row.xemNumbering && row.xemNumbering.length !== 0);
         },
         fealdFnActive(row) {
             return row.config && !row.config.paused && row.status === 'Continuing';

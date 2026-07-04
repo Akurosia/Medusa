@@ -4,7 +4,7 @@ from __future__ import unicode_literals
 
 import logging
 
-from medusa import app, ws
+from medusa import app, db, ws
 from medusa.logger.adapters.style import BraceAdapter
 from medusa.server.api.v2.base import (
     BaseRequestHandler,
@@ -51,9 +51,28 @@ class SeriesHandler(BaseRequestHandler):
         if not series_slug:
             detailed = self._parse_boolean(self.get_argument('detailed', default=False))
             episodes = self._parse_boolean(self.get_argument('episodes', default=False))
+            settings = self._parse_boolean(self.get_argument('settings', default=False))
+            numbering = self._parse_boolean(self.get_argument('numbering', default=True))
+            series_list = Series.find_series(predicate=filter_series)
+            xem_series = None
+            if not numbering:
+                main_db_con = db.DBConnection()
+                xem_series = {
+                    (int(row['indexer']), int(row['showid']))
+                    for row in main_db_con.select(
+                        'SELECT DISTINCT indexer, showid FROM tv_episodes '
+                        'WHERE (scene_season or scene_episode) != 0'
+                    )
+                }
             data = [
-                s.to_json(detailed=detailed, episodes=episodes)
-                for s in Series.find_series(predicate=filter_series)
+                s.to_json(
+                    detailed=detailed,
+                    episodes=episodes,
+                    settings=settings,
+                    numbering=numbering,
+                    has_xem_numbering=(s.indexer, s.series_id) in xem_series if xem_series is not None else None
+                )
+                for s in series_list
             ]
 
             return self._paginate(data, sort='title')
@@ -68,7 +87,9 @@ class SeriesHandler(BaseRequestHandler):
 
         detailed = self._parse_boolean(self.get_argument('detailed', default=False))
         episodes = self._parse_boolean(self.get_argument('episodes', default=False))
-        data = series.to_json(detailed=detailed, episodes=episodes)
+        settings = self._parse_boolean(self.get_argument('settings', default=False))
+        numbering = self._parse_boolean(self.get_argument('numbering', default=True))
+        data = series.to_json(detailed=detailed, episodes=episodes, settings=settings, numbering=numbering)
         if path_param:
             if path_param not in data:
                 return self._bad_request("Invalid path parameter '{0}'".format(path_param))

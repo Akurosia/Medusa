@@ -33,6 +33,9 @@
                 </ul>
             </div>
         </div>
+        <div v-if="!fetchingGroups && !groupsFetched" class="top-10">
+            <button type="button" class="btn-medusa btn-inline" @click="fetchGroups">Fetch release groups</button>
+        </div>
         <div id="add-new-release-group" class="row">
             <div class="col-md-4">
                 <input v-model="newGroup" class="form-control input-sm" type="text" placeholder="add custom group">
@@ -65,6 +68,10 @@ export default {
         whitelist: {
             type: Array,
             default: () => []
+        },
+        autoFetch: {
+            type: Boolean,
+            default: true
         }
     },
     data() {
@@ -73,6 +80,7 @@ export default {
             allReleaseGroups: [],
             newGroup: '',
             fetchingGroups: false,
+            groupsFetched: false,
             remoteGroups: []
         };
     },
@@ -81,7 +89,9 @@ export default {
         this.createIndexedObjects(this.whitelist, 'whitelist');
         this.createIndexedObjects(this.remoteGroups, 'releasegroups');
 
-        this.fetchGroups();
+        if (this.autoFetch) {
+            this.fetchGroups();
+        }
     },
     methods: {
         async fetchGroups() {
@@ -103,6 +113,7 @@ export default {
                     throw new Error('Failed to get release groups, check server logs for errors.');
                 }
                 this.remoteGroups = data.groups || [];
+                this.groupsFetched = true;
             } catch (error) {
                 const message = `Error while trying to fetch release groups for show "${showName}": ${error || 'Unknown'}`;
                 this.$snotify.warning(message, 'Error');
@@ -198,7 +209,10 @@ export default {
     },
     watch: {
         showName() {
-            this.fetchGroups();
+            this.groupsFetched = false;
+            if (this.autoFetch) {
+                this.fetchGroups();
+            }
         },
         allReleaseGroups: {
             deep: true,
