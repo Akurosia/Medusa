@@ -293,8 +293,24 @@ class ShowQueueItem(generic_queue.QueueItem):
 
         # Update the generic_queue.py to_json.
         self.to_json.update({
-            'show': self.show.to_json() if self.show else {}
+            'show': self._show_json()
         })
+
+    def _show_json(self):
+        """Return lightweight show data with live queue status for websocket updates."""
+        if not self.show:
+            return {}
+
+        data = self.show.to_json(numbering=False)
+        data['showQueueStatus'] = self.show.show_queue_status
+        return data
+
+    @property
+    def to_json(self):
+        """Update queue item JSON representation."""
+        data = super(ShowQueueItem, self).to_json
+        data['show'] = self._show_json()
+        return data
 
     def isInQueue(self):
         return self in app.show_queue_scheduler.action.queue + [

@@ -38,11 +38,14 @@ const showCacheShape = show => {
         sceneAbsoluteNumbering,
         xemAbsoluteNumbering,
         sceneNumbering,
+        showQueueStatus,
         ...cachedShow
     } = show;
 
     return cachedShow;
 };
+
+const sanitizeCachedShows = shows => shows.map(showCacheShape);
 
 const showsCacheKey = rootState => `${rootState.config.system.webRoot ? `${rootState.config.system.webRoot}_` : ''}shows`;
 
@@ -198,6 +201,20 @@ const mutations = {
         } else {
             Vue.set(state.queueitems, state.queueitems.length, queueItem);
         }
+
+        if (!queueItem.show || !queueItem.show.id || !queueItem.show.id.slug) {
+            return;
+        }
+
+        const existingShow = state.shows.find(show => show.id.slug === queueItem.show.id.slug);
+        if (!existingShow) {
+            return;
+        }
+
+        Vue.set(state.shows, state.shows.indexOf(existingShow), {
+            ...existingShow,
+            showQueueStatus: queueItem.show.showQueueStatus || existingShow.showQueueStatus
+        });
     },
     [ADD_SHOW_CONFIG_TEMPLATE](state, { show, template }) {
         // Get current show object
@@ -233,7 +250,7 @@ const mutations = {
         // Update (namespaced) localStorage
         const key = `${namespace}shows`;
         if (localStorage.getItem(key)) {
-            Vue.set(state, 'shows', JSON.parse(localStorage.getItem(key)));
+            Vue.set(state, 'shows', sanitizeCachedShows(JSON.parse(localStorage.getItem(key))));
             state.loading.finished = true;
         }
     }
