@@ -199,7 +199,7 @@ class ShowQueue(generic_queue.GenericQueue):
 
         return queue_item_update_show
 
-    def refreshShow(self, show, force=False, seasons=None):
+    def refreshShow(self, show, force=False, seasons=None, episodes=None):
 
         if self.isBeingRefreshed(show) and not force:
             raise CantRefreshShowException('This show is already being refreshed, not refreshing again.')
@@ -209,7 +209,7 @@ class ShowQueue(generic_queue.GenericQueue):
                       " Since updates do a refresh at the end anyway I'm skipping this request.")
             return
 
-        queue_item_obj = QueueItemRefresh(show, force=force, seasons=seasons)
+        queue_item_obj = QueueItemRefresh(show, force=force, seasons=seasons, episodes=episodes)
 
         log.debug('{id}: Queueing show refresh for {show}', {'id': show.series_id, 'show': show.name})
 
@@ -734,7 +734,7 @@ class QueueItemAdd(ShowQueueItem):
 class QueueItemRefresh(ShowQueueItem):
     """QueueItemRefresh class."""
 
-    def __init__(self, show=None, force=False, seasons=None):
+    def __init__(self, show=None, force=False, seasons=None, episodes=None):
         """Queue item refresh constructor."""
         ShowQueueItem.__init__(self, ShowQueueActions.REFRESH, show)
 
@@ -744,6 +744,7 @@ class QueueItemRefresh(ShowQueueItem):
         # force refresh certain items
         self.force = force
         self.seasons = None if seasons is None else [seasons] if not isinstance(seasons, list) else seasons
+        self.episodes = None if episodes is None else [episodes] if not isinstance(episodes, list) else episodes
 
     def run(self):
         """Run QueueItemRefresh queue item."""
@@ -762,7 +763,7 @@ class QueueItemRefresh(ShowQueueItem):
         ws.Message('QueueItemShow', self.to_json).push()
 
         try:
-            self.show.refresh_dir(seasons=self.seasons)
+            self.show.refresh_dir(seasons=self.seasons, episodes=self.episodes)
             if self.force and self.seasons is None:
                 self.show.update_metadata()
             if self.seasons is None:

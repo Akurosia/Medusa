@@ -1130,7 +1130,80 @@ class Series(TV):
 
         return sorted(season_dirs)
 
-    def load_episodes_from_dir(self, seasons=None):
+    @staticmethod
+    def _episode_scan_filters(episodes):
+        """Normalize episode filters for a targeted disk refresh."""
+        filters = []
+        for episode in episodes or []:
+            if isinstance(episode, dict):
+                season = try_int(episode.get('season'), None)
+                episode_number = try_int(episode.get('episode'), None)
+                absolute_number = try_int(episode.get('absoluteNumber'), None)
+            else:
+                values = list(episode) if isinstance(episode, tuple) else helpers.ensure_list(episode)
+                season = try_int(values[0], None) if len(values) > 0 else None
+                episode_number = try_int(values[1], None) if len(values) > 1 else None
+                absolute_number = try_int(values[2], None) if len(values) > 2 else None
+
+            if season is None or episode_number is None:
+                continue
+
+            filters.append({
+                'season': season,
+                'episode': episode_number,
+                'absolute_number': absolute_number,
+            })
+
+        return filters
+
+    @staticmethod
+    def _media_file_matches_episode_filters(filepath, episode_filters):
+        """Return whether a filename is a likely match for targeted episode filters."""
+        if not episode_filters:
+            return True
+
+        basename = os.path.splitext(os.path.basename(filepath))[0].lower()
+        normalized = re.sub(r'[\s._-]+', ' ', basename)
+
+        for episode_filter in episode_filters:
+            season = episode_filter['season']
+            episode = episode_filter['episode']
+            absolute_number = episode_filter.get('absolute_number')
+            patterns = [
+                r'(?<!\w)s0*{0}\s*e0*{1}(?!\w)'.format(season, episode),
+                r'(?<!\w){0}\s*x\s*0*{1}(?!\w)'.format(season, episode),
+            ]
+            if absolute_number:
+                patterns.extend([
+                    r'(?<!\w)e0*{0}(?!\w)'.format(absolute_number),
+                    r'(?<!\w)a0*{0}(?!\w)'.format(absolute_number),
+                    r'(?<!\w)0*{0}(?!\w)'.format(absolute_number),
+                ])
+
+            if any(re.search(pattern, normalized) for pattern in patterns):
+                return True
+
+        return False
+
+    def _episode_filter_locations(self, episode_filters):
+        """Return known DB locations for targeted episode filters."""
+        if not episode_filters:
+            return []
+
+        locations = []
+        main_db_con = db.DBConnection()
+        for episode_filter in episode_filters:
+            results = main_db_con.select(
+                'SELECT location FROM tv_episodes '
+                'WHERE indexer = ? AND showid = ? AND season = ? AND episode = ? '
+                "AND location != ''",
+                [self.indexer, self.series_id, episode_filter['season'], episode_filter['episode']]
+            )
+            locations += [row['location'] for row in results]
+
+        return locations
+
+    def load_episodes_from_dir(self, seasons=None, episodes=None):
         """Find all media files in the show folder and create episodes for as many as possible."""
         if not app.CREATE_MISSING_SHOW_DIRS and not self.is_location_valid():
             log.warning(u"{id}: Show directory doesn't exist, not loading episodes from disk",
@@ -1139,6 +1212,7 @@ class Series(TV):
 
         if seasons is not None:
             seasons = [try_int(season, season) for season in helpers.ensure_list(seasons)]
+        episode_filters = self._episode_scan_filters(episodes)
 
         log.debug(
             '{id}: Loading episodes from the show directory: {location}{season_msg}', {
@@ -1155,6 +1229,12 @@ class Series(TV):
                 media_files += helpers.list_media_files(season_dir)
         else:
             media_files = helpers.list_media_files(self.location)
+        if episode_filters:
+            media_files = [
+                media_file for media_file in media_files
+                if self._media_file_matches_episode_filters(media_file, episode_filters)
+            ]
+            media_files += self._episode_filter_locations(episode_filters)
         media_files = sorted(set(media_files))
         log.debug('{id}: Found files: {media_files}',
                   {'id': self.series_id, 'media_files': media_files})
@@ -1167,7 +1247,11 @@ class Series(TV):
             log.debug('{id}: Creating episode from: {location}',
                       {'id': self.series_id, 'location': media_file})
             try:
-                cur_episode = self.make_ep_from_file(os.path.join(self.location, media_file), seasons=seasons)
+                cur_episode = self.make_ep_from_file(
+                    os.path.join(self.location, media_file),
+                    seasons=seasons,
+                    episodes=episodes
+                )
             except (ShowNotFoundException, EpisodeNotFoundException) as error:
                 log.warning(
                     u'{id}: Episode {location} returned an exception {error_msg}', {
@@ -1490,7 +1574,7 @@ class Series(TV):
             or season_all_banner_result
         )
 
-    def make_ep_from_file(self, filepath, seasons=None):
+    def make_ep_from_file(self, filepath, seasons=None, episodes=None):
         """Make a TVEpisode object from a media file.
 
         :param filepath:
@@ -1516,8 +1600,8 @@ class Series(TV):
                       {'indexer_id': self.series_id, 'error': error})
             return None
 
-        episodes = [ep for ep in parse_result.episode_numbers if ep is not None]
-        if not episodes:
+        parsed_episodes = [ep for ep in parse_result.episode_numbers if ep is not None]
+        if not parsed_episodes:
             log.debug('{indexerid}: parse_result: {parse_result}',
                       {'indexerid': self.series_id, 'parse_result': parse_result})
             log.debug('{indexerid}: No episode number found in {filepath}, ignoring it',
@@ -1536,11 +1620,34 @@ class Series(TV):
                 }
             )
             return None
+        episode_filters = self._episode_scan_filters(episodes)
+        if episode_filters:
+            parsed_numbers = {(season, episode_number) for episode_number in parsed_episodes}
+            parsed_absolute_numbers = {
+                absolute_number for absolute_number in parse_result.ab_episode_numbers
+                if absolute_number is not None
+            }
+            matches_filter = any(
+                (episode_filter['season'], episode_filter['episode']) in parsed_numbers
+                or (
+                    episode_filter.get('absolute_number') is not None
+                    and episode_filter['absolute_number'] in parsed_absolute_numbers
+                )
+                for episode_filter in episode_filters
+            )
+            if not matches_filter:
+                log.debug(
+                    '{indexer_id}: Ignoring {filepath}; parsed episode is outside selected episode filter', {
+                        'indexer_id': self.series_id,
+                        'filepath': filepath,
+                    }
+                )
+                return None
 
         root_ep = None
 
         sql_l = []
-        for current_ep in episodes:
+        for current_ep in parsed_episodes:
             log.debug(
                 u'{id}: {filepath} parsed to {series_name} {ep_num}', {
                     'id': self.series_id,
@@ -2202,7 +2309,7 @@ class Series(TV):
                     cache_db_con.action(query, params)
                     return True
 
-    def refresh_dir(self, seasons=None):
+    def refresh_dir(self, seasons=None, episodes=None):
         """Refresh show using its location.
 
         :param seasons: Limit refresh to these seasons.
@@ -2218,7 +2325,7 @@ class Series(TV):
             seasons = [try_int(season, season) for season in helpers.ensure_list(seasons)]
 
         # load from dir
-        self.load_episodes_from_dir(seasons=seasons)
+        self.load_episodes_from_dir(seasons=seasons, episodes=episodes)
 
         # run through all locations from DB, check that they exist
         log.debug(u"{id}: Loading all episodes from '{show}' with a location from the database",

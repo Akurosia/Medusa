@@ -72,7 +72,8 @@ def _normalize_items(items):
         episodes = {
             (
                 try_int(episode.get('season'), None),
-                try_int(episode.get('episode'), None)
+                try_int(episode.get('episode'), None),
+                try_int(episode.get('absoluteNumber'), None)
             )
             for episode in item.get('episodes', [])
         }
@@ -82,7 +83,20 @@ def _normalize_items(items):
             if episode[0] is not None and episode[1] is not None
         }
         if series_slug and seasons:
-            normalized.append({'showSlug': series_slug, 'seasons': seasons, 'episodes': episodes})
+            normalized_episodes = [
+                {'season': season, 'episode': episode, 'absoluteNumber': absolute_number}
+                for season, episode, absolute_number in episodes
+            ]
+            normalized_episodes.sort(key=lambda item: (
+                item['season'],
+                item['episode'],
+                item['absoluteNumber'] if item['absoluteNumber'] is not None else -1
+            ))
+            normalized.append({
+                'showSlug': series_slug,
+                'seasons': seasons,
+                'episodes': normalized_episodes
+            })
     return normalized
 
 
@@ -110,7 +124,7 @@ class NewDownloadsHandler(BaseRequestHandler):
         history_rows = main_db_con.select(
             """
             SELECT h.indexer_id, h.showid, h.season,
-                   h.episode,
+                   h.episode, e.absolute_number,
                    h.action AS status,
                    MAX(h.date) AS latest_date
             FROM history h
@@ -121,7 +135,7 @@ class NewDownloadsHandler(BaseRequestHandler):
              AND e.episode = h.episode
             WHERE h.action IN ({status_placeholders})
               AND h.date >= ?
-            GROUP BY h.indexer_id, h.showid, h.season, h.episode
+            GROUP BY h.indexer_id, h.showid, h.season, h.episode, e.absolute_number
             ORDER BY latest_date DESC
             """.format(status_placeholders=status_placeholders),
             list(interesting_statuses) + [history_cutoff]
@@ -129,7 +143,7 @@ class NewDownloadsHandler(BaseRequestHandler):
         current_rows = main_db_con.select(
             """
             SELECT e.indexer AS indexer_id, e.showid, e.season,
-                   e.episode, e.status, e.airdate
+                   e.episode, e.absolute_number, e.status, e.airdate
             FROM tv_episodes e
             WHERE e.status IN ({status_placeholders})
               AND e.airdate >= ?
@@ -175,6 +189,7 @@ class NewDownloadsHandler(BaseRequestHandler):
             season_group['episodes'].append({
                 'season': row['season'],
                 'episode': row['episode'],
+                'absoluteNumber': row['absolute_number'],
                 'status': row['status'],
                 'statusName': statusStrings.get(row['status'], 'Unknown'),
                 'latestDate': latest_date
@@ -222,7 +237,11 @@ class NewDownloadsHandler(BaseRequestHandler):
                 continue
 
             try:
-                app.show_queue_scheduler.action.refreshShow(series, seasons=item['seasons'])
+                app.show_queue_scheduler.action.refreshShow(
+                    series,
+                    seasons=item['seasons'],
+                    episodes=item.get('episodes')
+                )
                 queued.append(item)
             except CantRefreshShowException as error:
                 errors.append({'showSlug': item['showSlug'], 'error': str(error)})
@@ -245,11 +264,14 @@ class NewDownloadsHandler(BaseRequestHandler):
                 errors.append({'showSlug': item['showSlug'], 'error': "Can't rename episodes when the show dir is missing."})
                 continue
 
-            selected_episodes = item['episodes']
+            selected_episodes = {
+                (episode['season'], episode['episode'], episode.get('absoluteNumber'))
+                for episode in item['episodes']
+            }
             for ep_obj in _get_rename_roots(series, season=item['seasons']):
                 if selected_episodes:
                     related_numbers = {
-                        (related_ep.season, related_ep.episode)
+                        (related_ep.season, related_ep.episode, related_ep.absolute_number)
                         for related_ep in ep_obj.related_episodes + [ep_obj]
                     }
                     if not selected_episodes.intersection(related_numbers):
