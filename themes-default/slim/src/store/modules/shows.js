@@ -59,6 +59,25 @@ const persistShowsCache = (rootState, shows) => {
     }, 0);
 };
 
+const showFilterText = show => {
+    const stats = show.stats && show.stats.episodes ? show.stats.episodes : {};
+    const downloaded = stats.downloaded || 0;
+    const snatched = stats.snatched || 0;
+    const total = stats.total || 0;
+    const downloadStats = `${downloaded}${snatched ? `+${snatched}` : ''} / ${total}`;
+
+    return [
+        show.title,
+        show.name,
+        show.network,
+        show.indexer,
+        show.status,
+        show.showType,
+        downloadStats,
+        snatched ? '+' : ''
+    ].filter(Boolean).join(' ').toLowerCase();
+};
+
 const mutations = {
     [ADD_SHOW](state, show) {
         const existingShow = state.shows.find(({ id, indexer }) => Number(show.id[show.indexer]) === Number(id[indexer]));
@@ -366,7 +385,7 @@ const getters = {
         // Filter by text for the banner, simple and smallposter layouts.
         // The Poster layout uses vue-isotope and this does not respond well to changes to the `list` property.
         if (layout.home !== 'poster' && normalizedFilter) {
-            shows = shows.filter(show => show.title.toLowerCase().includes(normalizedFilter));
+            shows = shows.filter(show => showFilterText(show).includes(normalizedFilter));
         }
 
         const normalizedShowLists = showListOrder.map(listTitle => listTitle.toLowerCase());

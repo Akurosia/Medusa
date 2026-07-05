@@ -2,7 +2,7 @@
     <div name="poster-container-row" class="row">
         <div name="poster-container-col" class="col-md-12">
             <isotope :ref="`isotope-${listTitle}`" :list="showsReady" :id="`isotope-container-${listTitle}`" :item-selector="'show-container'" :options="option" v-images-loaded:on.always="updateLayout">
-                <div v-for="show in showsReady" :key="show.id.slug" :id="show.id.slug" class="show-container" :style="showContainerStyle" :data-name="show.title" :data-filter-title="show.title.toLowerCase()" :data-date="show.airDate" :data-network="show.network" :data-indexer="show.indexer">
+                <div v-for="show in showsReady" :key="show.id.slug" :id="show.id.slug" class="show-container" :style="showContainerStyle" :data-name="show.title" :data-filter-text="showFilterText(show)" :data-date="show.airDate" :data-network="show.network" :data-indexer="show.indexer">
                     <div class="overlay-container">
                         <div class="background-image">
                             <img src="images/poster-back-dark.png">
@@ -191,6 +191,21 @@ export default {
     },
     methods: {
         prettyBytes: bytes => pretty(bytes),
+        showFilterText(show) {
+            const { downloaded, snatched, total } = show.stats.episodes;
+            const downloadStats = `${downloaded}${snatched ? `+${snatched}` : ''} / ${total}`;
+
+            return [
+                show.title,
+                show.name,
+                show.network,
+                show.indexer,
+                show.status,
+                show.showType,
+                downloadStats,
+                snatched ? '+' : ''
+            ].filter(Boolean).join(' ').toLowerCase();
+        },
         parsePrevDateFn(row) {
             const { fuzzyParseDateTime } = this;
             if (row.prevAirDate) {
@@ -264,7 +279,7 @@ export default {
             const allContainers = isotope.$el.querySelectorAll('.show-container');
 
             for (const container of allContainers) {
-                if (!normalizedFilter || container.dataset.filterTitle.includes(normalizedFilter)) {
+                if (!normalizedFilter || container.dataset.filterText.includes(normalizedFilter)) {
                     container.classList.remove('hide');
                 } else {
                     container.classList.add('hide');
